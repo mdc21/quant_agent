@@ -38,7 +38,7 @@ class EquityResearchAgent:
             
         return score
 
-    def screen_stocks(self, index_name: str = "TEST BATCH") -> List[StockCandidate]:
+    def screen_stocks(self, index_name: str = "NIFTY 50") -> List[StockCandidate]:
         """
         Queries ArcticDB for pre-ingested fundamentals of the target universe.
         """
