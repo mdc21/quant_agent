@@ -201,7 +201,8 @@ class PassiveResearchAgent:
                     self.logger.warning(f"Failed to fetch live TER for {name} ({e}). Using default.")
                 
                 vehicle_data.append({
-                    "ticker": name or f"Fund_{code}",
+                    "ticker": f"MF_{code}",  # Safe placeholder — mutual funds have no Yahoo ticker
+                    "scheme_name": name or f"Fund_{code}",
                     "category": "Index/ETF" if name and "Index" in name else "Mutual Fund",
                     "returns": aligned_fund,
                     "benchmark_returns": aligned_nifty,
@@ -240,9 +241,9 @@ class PassiveResearchAgent:
         Attempts to fetch live data to calculate real-time TE.
         """
         defensive_configs = [
-            {"ticker": "LIQUIDBEES.NS", "category": "Debt/Liquid", "ter": 0.001, "rationale": "Cash equivalent. Low duration risk."},
-            {"ticker": "GOLDBEES.NS", "category": "Commodity", "ter": 0.008, "rationale": "Inflation hedge."},
-            {"ticker": "GILTBEES.NS", "category": "Debt/Sovereign", "ter": 0.005, "rationale": "Sovereign safety."}
+            {"ticker": "LIQUIDBEES.NS", "category": "Debt/Liquid",    "ter": 0.001, "rationale": "Cash equivalent. Lowest duration risk."},
+            {"ticker": "GOLDBEES.NS",   "category": "Commodity/Gold",  "ter": 0.008, "rationale": "Inflation hedge. Non-correlated to equity."},
+            {"ticker": "CPSEETF.NS",    "category": "Debt/PSU",        "ter": 0.005, "rationale": "High-grade PSU bond exposure. Capital preservation."},
         ]
         
         import yfinance as yf
@@ -258,7 +259,7 @@ class PassiveResearchAgent:
                 self.logger.info(f"Fetching live data for defensive ETF: {config['ticker']}")
                 df = yf.download(config['ticker'], period="180d", interval="1d", progress=False)
                 if not df.empty:
-                    rets = df["Close"].pct_change().dropna()
+                    rets = df["Close"].ffill().pct_change(fill_method=None).dropna()
                     if isinstance(rets, pd.DataFrame): rets = rets.iloc[:, 0]
                     
                     te = self.calculate_tracking_error(rets, nifty_mock) # Defensive TE vs cash-like

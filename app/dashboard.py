@@ -137,35 +137,58 @@ def get_audit_history(limit=5):
 def get_benchmark_performance(equity_sleeve, passive_sleeve, investor_df=None):
     """
     Calculates 3-year cumulative returns for proposed portfolio and benchmarks.
+    Only downloads tickers that are valid Yahoo Finance symbols (NSE ETFs, stocks, indices).
+    Mutual fund tickers (MF_*) and full fund names are excluded automatically.
     """
     benchmarks = {
-        "Nifty 50": "^NSEI",
-        "Nifty Next 50": "JUNIORBEES.NS",  # Most reliable proxy for Next 50
-        "Nifty Midcap 100": "^NSMIDCP100", 
-        "Nifty Smallcap 100": "^NSESMLCP100"
+        "Nifty 50":     "^NSEI",
+        "Nifty Next 50": "JUNIORBEES.NS",   # Most reliable ETF proxy
+        "Nifty Midcap": "MID150BEES.NS",    # ETF proxy — more reliable than ^NSMIDCP100
     }
-    
+
+    def _is_yahoo_valid(ticker: str) -> bool:
+        """Return True only for tickers that Yahoo Finance can actually serve."""
+        if not ticker:
+            return False
+        t = ticker.strip()
+        if t.startswith("MF_"):           return False  # mutual fund placeholder
+        if " " in t:                       return False  # full fund name (no spaces in valid tickers)
+        if t.startswith("$"):              return False  # un-stripped Breeze prefix
+        return True
+
     # 1. Collect all tickers
-    all_tickers = list(benchmarks.values())
+    all_tickers = [t for t in benchmarks.values() if _is_yahoo_valid(t)]
     
-    # Proposed weights
+    # Proposed weights — equity
     prop_weights = {}
     for s in equity_sleeve:
         t = f"{s['symbol']}.NS"
-        all_tickers.append(t)
-        prop_weights[t] = s.get('target_weight', 0)
+        if _is_yahoo_valid(t):
+            all_tickers.append(t)
+            prop_weights[t] = s.get('target_weight', 0)
+    # Proposed weights — passive/ETF (skip mutual funds)
     for f in passive_sleeve:
-        t = f"{f['ticker']}" if "^" in f['ticker'] else f"{f['ticker']}.NS"
+        raw = f['ticker']
+        if not _is_yahoo_valid(raw):
+            continue
+        t = raw if ("^" in raw or raw.endswith((".NS", ".BO"))) else f"{raw}.NS"
         all_tickers.append(t)
         prop_weights[t] = f.get('target_weight', 0)
         
-    # Investor weights (Equal weight fallback if quantity not enough for value)
+    # Investor weights — map via SymbolMapper, skip unknowns
     inv_weights = {}
     if investor_df is not None:
+        from core.utils.symbol_mapper import SymbolMapper
         for _, row in investor_df.iterrows():
-            t = f"{row['Symbol']}.NS"
-            all_tickers.append(t)
-            inv_weights[t] = 1.0 / len(investor_df)
+            raw_sym = str(row['Symbol']).strip().lstrip('$')
+            yahoo_sym = SymbolMapper.to_yahoo(raw_sym)
+            t = f"{yahoo_sym}.NS"
+            if _is_yahoo_valid(t):
+                all_tickers.append(t)
+                inv_weights[t] = 1.0 / len(investor_df)
+
+    # Deduplicate
+    all_tickers = list(dict.fromkeys(all_tickers))
             
     # 2. Download Data (Last 3 Years)
     try:
@@ -185,18 +208,27 @@ def get_benchmark_performance(equity_sleeve, passive_sleeve, investor_df=None):
                 
         # B. Proposed Portfolio
         prop_series = pd.Series(0.0, index=returns.index)
-        for t, w in prop_weights.items():
-            if t in returns.columns:
+        valid_prop_tickers = [t for t in prop_weights.keys() if t in returns.columns]
+        
+        if valid_prop_tickers:
+            total_w = sum(prop_weights.values())
+            for t in valid_prop_tickers:
+                # Use target weight if exists, else equal weight
+                w = prop_weights[t] if total_w > 0 else (1.0 / len(valid_prop_tickers))
                 prop_series += returns[t] * w
+        
         results["Proposed Portfolio"] = (1 + prop_series).cumprod() * 100
+        returns["Proposed Portfolio"] = prop_series
         
         # C. Investor Portfolio
-        if investor_df is not None:
+        if investor_df is not None and inv_weights:
             inv_series = pd.Series(0.0, index=returns.index)
-            for t, w in inv_weights.items():
-                if t in returns.columns:
-                    inv_series += returns[t] * w
-            results["Investor Portfolio"] = (1 + inv_series).cumprod() * 100
+            valid_inv_tickers = [t for t in inv_weights.keys() if t in returns.columns]
+            if valid_inv_tickers:
+                for t in valid_inv_tickers:
+                    inv_series += returns[t] * inv_weights[t]
+                results["Investor Portfolio"] = (1 + inv_series).cumprod() * 100
+                returns["Investor Portfolio"] = inv_series
             
         return results.reset_index(), returns
     except Exception:
@@ -247,7 +279,7 @@ with st.sidebar:
         nav = st.radio("Navigation", ["Admin Console", "Risk Control", "Audit Ledger", "System Health"])
 
     st.sidebar.markdown("<br><br>", unsafe_allow_html=True)
-    if st.button("🔴 Emergency Stop", use_container_width=True):
+    if st.button("🔴 Emergency Stop", width="stretch"):
         st.error("System Halted.")
 
 # --- Main Interface ---
@@ -283,13 +315,24 @@ if persona == "📈 Investor":
                 data=csv,
                 file_name="yourbestpath_template.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
 
         # 1. Strategy Selection (Outside form for immediate UI reaction)
         st.markdown("##### Funding Strategy")
         capital_type = st.segmented_control("Deployment Mode", ["New Capital", "Import Portfolio", "Plan Only"], default="New Capital")
         
+        # --- NEW: State Purge Logic ---
+        if 'last_capital_type' not in st.session_state:
+            st.session_state.last_capital_type = capital_type
+            
+        if st.session_state.last_capital_type != capital_type:
+            # Purge all legacy portfolio data on strategy switch
+            for key in ['imported_portfolio', 'invested_amount', 'path_equity', 'path_passive', 'goals_defined']:
+                st.session_state.pop(key, None)
+            st.session_state.last_capital_type = capital_type
+            st.rerun()
+            
         amount = 0
         if capital_type == "Import Portfolio":
             st.markdown("""
@@ -310,20 +353,124 @@ if persona == "📈 Investor":
                     df_import = pd.read_csv(uploaded_file)
                     if "Ticker" in df_import.columns:
                         df_import = df_import.rename(columns={"Ticker": "Symbol"})
+                    
+                    if "Symbol" in df_import.columns:
+                        from core.utils.symbol_mapper import SymbolMapper
+                        df_import["Symbol"] = df_import["Symbol"].astype(str).str.strip().str.lstrip('$')
+                        df_import["Symbol"] = df_import["Symbol"].apply(SymbolMapper.to_nse)
+                        
                         if "Qty_LongTerm" in df_import.columns and "Qty_ShortTerm" in df_import.columns:
                             df_import["Quantity"] = df_import["Qty_LongTerm"] + df_import["Qty_ShortTerm"]
                         elif "Quantity" not in df_import.columns and "Qty_LongTerm" in df_import.columns:
                             df_import["Quantity"] = df_import["Qty_LongTerm"]
-                        st.success(f"Loaded {len(df_import)} holdings.")
-                        st.session_state.imported_portfolio = df_import
-                    elif "Symbol" in df_import.columns and "Quantity" in df_import.columns:
-                        st.success(f"Loaded {len(df_import)} holdings.")
-                        st.session_state.imported_portfolio = df_import
+                        
+                        # --- AUTO VALUATION: Calculate live market value ---
+                        with st.spinner("📊 Valuing portfolio at live market prices..."):
+                            import yfinance as yf
+                            import io, contextlib
+                            total_market_value = 0
+                            valued_rows = []
+                            cost_fallback = []   # live — symbols priced at avg_buy_price
+                            zero_valued   = []   # bankrupt/delisted — written off to ₹0
+                            live_priced   = []   # successfully fetched from Yahoo
+
+                            for _, row in df_import.iterrows():
+                                sym = row["Symbol"]
+                                qty = row.get("Quantity", 0)
+                                avg_price = row.get("avg_buy_price", 0)
+
+                                if SymbolMapper.is_zero_value(sym):
+                                    # Bankrupt / delisted — market value is ₹0
+                                    live_price = 0
+                                    zero_valued.append(sym)
+
+                                elif SymbolMapper.is_resolvable(sym):
+                                    live_price = avg_price  # fallback if fetch fails
+                                    try:
+                                        yahoo_sym = SymbolMapper.to_yahoo(sym)
+                                        with contextlib.redirect_stdout(io.StringIO()), \
+                                             contextlib.redirect_stderr(io.StringIO()):
+                                            hist = yf.Ticker(f"{yahoo_sym}.NS").history(period="1d")
+                                        if not hist.empty:
+                                            live_price = hist["Close"].iloc[-1]
+                                            live_priced.append(sym)
+                                        else:
+                                            cost_fallback.append(sym)
+                                    except Exception:
+                                        cost_fallback.append(sym)
+                                else:
+                                    # Known unresolvable but economically live — use cost price
+                                    live_price = avg_price
+                                    cost_fallback.append(sym)
+
+                                market_val = qty * live_price
+                                pnl = ((live_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+                                total_market_value += market_val
+                                valued_rows.append({**row.to_dict(), "live_price": live_price,
+                                                    "market_value": market_val, "pnl_pct": pnl})
+
+                            df_import = pd.DataFrame(valued_rows)
+                            st.session_state.imported_portfolio = df_import
+                            st.session_state.computed_portfolio_value = int(total_market_value)
+
+                            # ── Valuation summary ──
+                            cost_basis = (df_import["avg_buy_price"] * df_import["Quantity"]).sum() \
+                                         if "avg_buy_price" in df_import.columns else 0
+                            overall_pnl = ((total_market_value - cost_basis) / cost_basis * 100) \
+                                          if cost_basis > 0 else 0
+                            pnl_color = "#10b981" if overall_pnl >= 0 else "#f43f5e"
+
+                            zero_note = ""
+                            if zero_valued:
+                                zv_names = ", ".join(zero_valued[:5]) + ("…" if len(zero_valued) > 5 else "")
+                                zero_note = (f"<br><span style='font-size:0.8rem; color:#f43f5e;'>"
+                                             f"🗑️ Written off (₹0) — bankrupt/delisted: {zv_names}</span>")
+
+                            fallback_note = ""
+                            if cost_fallback:
+                                fb_names = ", ".join(cost_fallback[:5]) + ("…" if len(cost_fallback) > 5 else "")
+                                fallback_note = (f"<br><span style='font-size:0.8rem; color:#f59e0b;'>"
+                                                 f"⚠️ Cost price used (no live data): {fb_names}</span>")
+
+                            st.markdown(f"""
+                            <div style='background:rgba(16,185,129,0.1); border-radius:8px;
+                                        padding:1rem; border-left:4px solid {pnl_color}; margin-top:0.5rem;'>
+                                <b>📈 Live Portfolio Valuation Complete</b><br>
+                                <span style='font-size:0.9rem;'>
+                                    Holdings: <b>{len(df_import)}</b> &nbsp;|&nbsp;
+                                    Live-priced: <b style='color:#10b981'>{len(live_priced)}</b> &nbsp;|&nbsp;
+                                    Cost fallback: <b style='color:#f59e0b'>{len(cost_fallback)}</b> &nbsp;|&nbsp;
+                                    Written off: <b style='color:#f43f5e'>{len(zero_valued)}</b>
+                                </span><br>
+                                <span style='font-size:1rem; font-weight:700;'>
+                                    Market Value: {fmt_inr(total_market_value)} &nbsp;|&nbsp;
+                                    P&amp;L: <span style='color:{pnl_color}'>{overall_pnl:+.1f}%</span>
+                                </span>
+                                {zero_note}{fallback_note}
+                            </div>
+                            """, unsafe_allow_html=True)
                     else:
                         st.error("CSV must contain 'Ticker' or 'Symbol' columns.")
                 except Exception as e:
                     st.error(f"Import Error: {e}")
-            amount = st.number_input("Total Value of Imported Portfolio (₹)", value=1000000, step=50000, format="%d")
+            
+            # Pre-fill with computed value if available, else manual entry
+            computed_val = st.session_state.get("computed_portfolio_value", None)
+            if computed_val:
+                st.markdown(f"""
+                <div style='background:rgba(99,102,241,0.1); border-left:4px solid #6366f1;
+                            padding:0.8rem; border-radius:8px; margin-top:0.5rem;'>
+                    <b style='color:#6366f1;'>📊 Portfolio Market Value (Live-Priced)</b><br>
+                    <span style='font-size:1.1rem; font-weight:700;'>{fmt_inr(computed_val)}</span>
+                    <span style='font-size:0.8rem; color:#64748b;'> — This will be your capital in the Waterfall</span>
+                </div>
+                """, unsafe_allow_html=True)
+                amount = st.number_input("Adjust Portfolio Value (₹) if needed", value=computed_val,
+                                         step=50000, format="%d",
+                                         help="Auto-calculated from live prices × quantities. Adjust if any holdings were unresolvable.")
+            else:
+                st.warning("⚠️ No portfolio uploaded yet. Upload your CSV above to auto-calculate, or enter manually.")
+                amount = st.number_input("Total Portfolio Value (₹)", value=1000000, step=50000, format="%d")
         elif capital_type == "New Capital":
             amount = st.number_input("Investment Amount (₹)", value=1000000, step=50000, format="%d")
             st.caption(f"Ready for Deployment: {fmt_inr(amount)}")
@@ -333,39 +480,127 @@ if persona == "📈 Investor":
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("##### 🎯 Goal-Specific Objectives")
         with st.form("onboarding_form"):
-            with st.expander("📊 Target Objectives", expanded=True):
-                col1, col2 = st.columns(2)
-                with col1:
-                    emergency_fund = st.number_input("Survival Target (Emergency) - ₹", value=1200000, step=100000, format="%d")
-                    st.markdown(f"<p style='color:#6366f1; font-weight:600; font-size:0.9rem; margin-top:-0.5rem;'>Currently: {fmt_inr(emergency_fund)}</p>", unsafe_allow_html=True)
-                    retirement_goal = st.number_input("Safety Target (Retirement) - ₹", value=50000000, step=500000, format="%d")
-                    st.markdown(f"<p style='color:#6366f1; font-weight:600; font-size:0.9rem; margin-top:-0.5rem;'>Currently: {fmt_inr(retirement_goal)}</p>", unsafe_allow_html=True)
-                with col2:
-                    legacy_goal = st.number_input("Growth Target (Wealth) - ₹", value=150000000, step=1000000, format="%d")
-                    st.markdown(f"<p style='color:#6366f1; font-weight:600; font-size:0.9rem; margin-top:-0.5rem;'>Currently: {fmt_inr(legacy_goal)}</p>", unsafe_allow_html=True)
-                    horizon = st.slider("Time Horizon (Years)", 1, 40, 20)
+            st.markdown("##### 🚀 Inflation Strategy")
+            inf_col1, inf_col2 = st.columns([1, 2])
+            with inf_col1:
+                inf_scenario = st.radio("Scenario", ["Target (4%)", "Base (6%)", "High (8%)", "Custom"], index=1)
+            with inf_col2:
+                if inf_scenario == "Target (4%)": inflation_rate = 0.04
+                elif inf_scenario == "Base (6%)": inflation_rate = 0.06
+                elif inf_scenario == "High (8%)": inflation_rate = 0.08
+                else:
+                    inflation_rate = st.slider("Custom Inflation (%)", 1.0, 15.0, 6.0, step=0.1) / 100.0
+                
+                st.info(f"💡 At **{inflation_rate*100:.1f}%** inflation, costs double every **{72/(inflation_rate*100):.1f} years**.")
+
+            st.markdown("---")
+            st.markdown("##### 📊 Target Objectives (Today's Money)")
+            col1, col2 = st.columns(2)
+            with col1:
+                emergency_fund = st.number_input("Survival (Monthly Expenses) - ₹", value=100000, step=10000, format="%d")
+                # Emergency fund is usually 12x monthly expenses
+                emergency_fund_corpus = emergency_fund * 12
+                st.markdown(f"<p style='color:#64748b; font-size:0.85rem; margin-top:-0.5rem;'>Annualized: {fmt_inr(emergency_fund_corpus)}</p>", unsafe_allow_html=True)
+                
+                retirement_goal = st.number_input("Safety Target (Retirement) - ₹", value=50000000, step=500000, format="%d")
+            with col2:
+                legacy_goal = st.number_input("Growth Target (Legacy) - ₹", value=150000000, step=1000000, format="%d")
+                horizon = st.slider("Retirement Horizon (Years)", 1, 40, 20)
             
+            # --- Disclosures (Hidden Math) ---
+            st.markdown("<div style='background:#f8fafc; padding:1rem; border-radius:8px; border:1px solid #e2e8f0;'>", unsafe_allow_html=True)
+            st.markdown("<p style='font-weight:600; font-size:0.9rem; margin-bottom:0.5rem;'>🔍 Future Value Disclosure (Inflation-Adjusted)</p>", unsafe_allow_html=True)
+            
+            # FV Calculations
+            fv_surv = emergency_fund_corpus * ((1 + inflation_rate) ** 2)
+            fv_safe = retirement_goal * ((1 + inflation_rate) ** horizon)
+            fv_growth = legacy_goal * ((1 + inflation_rate) ** (horizon + 5))
+            
+            st.markdown(f"""
+            <div style='display:grid; grid-template-columns: 1fr 1fr 1fr; gap:1rem;'>
+                <div>
+                    <small style='color:#64748b;'>Survival (2yr)</small><br>
+                    <b style='font-size:0.9rem;'>{fmt_inr(fv_surv)}</b>
+                </div>
+                <div>
+                    <small style='color:#64748b;'>Safety ({horizon}yr)</small><br>
+                    <b style='font-size:0.9rem;'>{fmt_inr(fv_safe)}</b>
+                </div>
+                <div>
+                    <small style='color:#64748b;'>Growth ({horizon+5}yr)</small><br>
+                    <b style='font-size:0.9rem;'>{fmt_inr(fv_growth)}</b>
+                </div>
+            </div>
+            <p style='font-size:0.75rem; color:#94a3b8; margin-top:0.8rem;'>
+                *Based on <b>{inflation_rate*100:.1f}%</b> annual inflation. Your {fmt_inr(retirement_goal)} Safety goal 
+                requires {fmt_inr(fv_safe)} in {horizon} years to maintain the same lifestyle.
+            </p>
+            """, unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+            # Update emergency_fund to the annualized corpus for the waterfall
+            emergency_fund = emergency_fund_corpus
+            
+            # --- NEW: Fiduciary Waterfall Allocation ---
+            total_avail = amount
+            
+            # 1. Fill Survival First
+            surv_alloc = min(total_avail, emergency_fund)
+            rem1 = total_avail - surv_alloc
+            
+            # 2. Fill Safety Second
+            safe_alloc = min(rem1, retirement_goal)
+            rem2 = rem1 - safe_alloc
+            
+            # 3. Growth Preview & Override
+            st.markdown("---")
+            st.markdown("##### 🌊 Waterfall Allocation Preview")
+            st.write(f"1. **Survival**: {fmt_inr(surv_alloc)} / {fmt_inr(emergency_fund)} " + ("✅" if surv_alloc >= emergency_fund else "🚨"))
+            st.write(f"2. **Safety**: {fmt_inr(safe_alloc)} / {fmt_inr(retirement_goal)} " + ("✅" if safe_alloc >= retirement_goal else "🟡"))
+            
+            if retirement_goal > 0 and (safe_alloc / retirement_goal) >= 0.5:
+                st.success("✅ **Safety > 50% Funded.** You have unlocked the **Growth Shortcut**.")
+                growth_override = st.slider("Growth Shortcut: Tactical Allocation (%)", 0, 50, 0, help="Shift a portion of the Safety-eligible capital directly into Growth for tactical upside.")
+                st.session_state.growth_override = growth_override / 100.0
+                
+                # Re-calculate with override
+                growth_from_safe = rem1 * (growth_override / 100.0)
+                safe_alloc -= growth_from_safe
+                growth_alloc = rem2 + growth_from_safe
+            else:
+                growth_alloc = rem2
+                st.session_state.growth_override = 0.0
+                
+            st.write(f"3. **Growth**: {fmt_inr(growth_alloc)} (Residual Capital)")
+            st.markdown("<br>", unsafe_allow_html=True)
+
             submitted = st.form_submit_button("Initialize Fiduciary Plan")
             if submitted:
-                # UX Reset: Clear old portfolio data so the Portfolio View waits for a new generation signal
+                # UX Reset
                 for key in ['path_equity', 'path_passive', 'allocator_meta']:
                     st.session_state.pop(key, None)
                 
-                # Prepare goals for persistence
                 user_goals = [
-                    {"label": "Survival", "tier": 1, "target_pv": emergency_fund, "horizon": 2, "current_assets": amount * 0.1},
-                    {"label": "Safety", "tier": 2, "target_pv": retirement_goal, "horizon": horizon, "current_assets": amount * 0.3},
-                    {"label": "Growth", "tier": 3, "target_pv": legacy_goal, "horizon": horizon + 5, "current_assets": amount * 0.6}
+                    {"label": "Survival", "tier": 1, "target_pv": emergency_fund, "horizon": 2, "current_assets": surv_alloc},
+                    {"label": "Safety",   "tier": 2, "target_pv": retirement_goal, "horizon": horizon, "current_assets": safe_alloc},
+                    {"label": "Growth",   "tier": 3, "target_pv": legacy_goal, "horizon": horizon + 5, "current_assets": growth_alloc}
                 ]
                 
-                # Persist to DataStore
                 try:
+                    from core.data.store import DataStore
                     store = DataStore()
-                    store.save_goals("user_1", user_goals, risk_tolerance="Moderate")
+                    store.save_goals("user_1", user_goals, risk_tolerance="Moderate", inflation_rate=inflation_rate)
+                    # Always use the actual portfolio value — never stale defaults
                     st.session_state.invested_amount = amount
                     st.session_state.goals_defined = True
                     st.session_state.capital_type = capital_type
-                    st.success("Fiduciary Plan Initialized & Goals Persisted. Moving to Analysis...")
+                    st.success(
+                        f"✅ Fiduciary Waterfall Applied | "
+                        f"Total Capital: **{fmt_inr(amount)}** | "
+                        f"Survival: {fmt_inr(surv_alloc)} | "
+                        f"Safety: {fmt_inr(safe_alloc)} | "
+                        f"Growth: {fmt_inr(growth_alloc)}"
+                    )
                 except Exception as e:
                     st.error(f"Failed to save goals: {e}")
 
@@ -473,7 +708,7 @@ if persona == "📈 Investor":
                         cap_df = pd.DataFrame(cap_audit)
                         if not cap_df.empty and 'Capital' in cap_df.columns:
                             cap_df['Capital'] = cap_df['Capital'].apply(lambda x: f"₹ {x:,.2f}")
-                        st.dataframe(cap_df, hide_index=True, use_container_width=True)
+                        st.dataframe(cap_df, hide_index=True, width="stretch")
                         
                     with d2:
                         st.markdown("**By Sector**")
@@ -488,7 +723,7 @@ if persona == "📈 Investor":
                         sector_df = pd.DataFrame(sector_audit)
                         if not sector_df.empty and 'Capital' in sector_df.columns:
                             sector_df['Capital'] = sector_df['Capital'].apply(lambda x: f"₹ {x:,.2f}")
-                        st.dataframe(sector_df, hide_index=True, use_container_width=True)
+                        st.dataframe(sector_df, hide_index=True, width="stretch")
                         
                     with d3:
                         st.markdown("**By Passive Category**")
@@ -506,7 +741,7 @@ if persona == "📈 Investor":
                             pass_df = pd.DataFrame(pass_audit)
                             if not pass_df.empty and 'Capital' in pass_df.columns:
                                 pass_df['Capital'] = pass_df['Capital'].apply(lambda x: f"₹ {x:,.2f}")
-                            st.dataframe(pass_df, hide_index=True, use_container_width=True)
+                            st.dataframe(pass_df, hide_index=True, width="stretch")
 
             # --- 1. Portfolio Construction Engine ---
             st.markdown("### 🏗️ Path Allocator")
@@ -557,52 +792,114 @@ if persona == "📈 Investor":
                 with c2:
                     max_funds = st.slider("Max Fund Positions", 5, 15, 10)
                     
-                if st.button("⚡ Generate Fiduciary Portfolio", use_container_width=True):
+                if st.button("⚡ Generate Fiduciary Portfolio", width="stretch"):
                     with st.spinner(f"PathAllocator: Applying {risk_prof} macro rules and scanning entire market..."):
-                        # Handle Portfolio Import Weight Calculation
-                        current_port_map = None
-                        if st.session_state.get('capital_type') == "Import Portfolio" and hasattr(st.session_state, 'imported_portfolio'):
-                            df_imp = st.session_state.imported_portfolio
-                            total_val = st.session_state.invested_amount
-                            current_port_map = {}
-                            
-                            import yfinance as yf
-                            st.write("🔄 Auditing current holdings for rebalancing...")
-                            for _, row in df_imp.iterrows():
-                                sym = row['Symbol']
-                                qty = row['Quantity']
-                                try:
-                                    # Fetch current price to estimate weight
-                                    ticker = yf.Ticker(f"{sym}.NS")
-                                    price = ticker.history(period="1d")["Close"].iloc[-1]
-                                    current_port_map[sym] = (qty * price) / total_val
-                                except:
-                                    current_port_map[sym] = 0.0 # Default to exit if price unknown
                         
-                        from app.agents.allocator import PathAllocator
-                        allocator = PathAllocator(
-                            max_stocks=max_stocks, 
-                            max_funds=max_funds,
-                            risk_profile=risk_prof,
-                            total_capital=total_cap,
-                            equity_split_percent=eq_split,
-                            custom_macro_allocation=custom_macro,
-                            custom_cap_ratios=custom_cap
-                        )
+                        # ── STEP 0: Goal-Gate Check ────────────────────────────────
+                        from core.utils.goal_gate import evaluate_goal_gate, SURVIVAL_MODE, SAFETY_MODE
+                        from app.agents.gia import GoalInterpretationAgent
                         
-                        st.session_state.path_equity = allocator.build_equity_sleeve(current_portfolio=current_port_map)
-                        st.session_state.path_passive = allocator.build_passive_sleeve()
-                        # Detect optimizer method from equity sleeve
-                        eq = st.session_state.path_equity
-                        opt_method = eq[0].get('optimizer', 'Equal-Weight') if eq else 'Equal-Weight'
-                        st.session_state.allocator_meta = {
-                            "equity_cap": allocator.target_equity_capital,
-                            "defensive_cap": allocator.target_defensive_capital,
-                            "alpha_cap": allocator.alpha_capital,
-                            "beta_cap": allocator.beta_equity_capital,
-                            "regime_scale": f"{allocator.equity_allocation*100:.0f}%",
-                            "optimizer_method": opt_method,
-                        }
+                        gate = None
+                        try:
+                            gia = GoalInterpretationAgent()
+                            sleeves = gia.interpret_goals("user_1")
+                            if sleeves:
+                                raw_results = [gia.run_feasibility_check(s) for s in sleeves]
+                                # Enrich with current_assets and target_value from sleeves
+                                enriched = []
+                                for res, sleeve in zip(raw_results, sleeves):
+                                    enriched.append({**res,
+                                        "current_assets": sleeve.current_assets,
+                                        "target_value": sleeve.target_value})
+                                gate = evaluate_goal_gate(enriched)
+                        except Exception as e:
+                            st.warning(f"Goal gate check skipped: {e}")
+
+                        # Display mode banner
+                        if gate:
+                            st.markdown(f"""
+                            <div style='background:{gate.banner_color}20; border-left:5px solid {gate.banner_color};
+                                        padding:1rem; border-radius:8px; margin-bottom:1rem;'>
+                                <h4 style='color:{gate.banner_color}; margin:0;'>{gate.banner_icon} {gate.headline}</h4>
+                                <p style='color:#64748b; margin:0.5rem 0 0;'>{gate.rationale}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                        # ── STEP 1: Resolve portfolio mode constraints ──────────────
+                        if gate and gate.mode == SURVIVAL_MODE:
+                            # Fiduciary Lock: only defensive/liquid
+                            st.session_state.path_equity = []
+                            from app.agents.pfra import PassiveResearchAgent
+                            pfra = PassiveResearchAgent()
+                            defensive = pfra.screen_defensive_funds()
+                            st.session_state.path_passive = [
+                                {"ticker": f.ticker, "category": f.category,
+                                 "target_capital": total_cap / max(1, len(defensive)),
+                                 "target_weight": 1.0 / max(1, len(defensive)),
+                                 "rationale": "🚨 Survival Mode: Liquid/Defensive Only",
+                                 "conviction": getattr(f, "conviction_score", 0),
+                                 "tracking_error": getattr(f, "tracking_error", 0),
+                                 "expense_ratio": getattr(f, "expense_ratio", 0)}
+                                for f in defensive
+                            ]
+                            st.session_state.allocator_meta = {
+                                "equity_cap": 0,
+                                "defensive_cap": total_cap,
+                                "alpha_cap": 0,
+                                "beta_cap": 0,
+                                "regime_scale": "0%",
+                                "optimizer_method": "Fiduciary Lock",
+                            }
+                        else:
+                            # Safety Mode or Growth Mode — use PathAllocator with gated caps
+                            if gate and gate.mode == SAFETY_MODE:
+                                effective_eq_split = int(gate.equity_cap_pct * 100)
+                            else:
+                                effective_eq_split = eq_split
+
+                            # Handle Portfolio Import Weight Calculation
+                            current_port_map = None
+                            if st.session_state.get('capital_type') == "Import Portfolio" and hasattr(st.session_state, 'imported_portfolio'):
+                                df_imp = st.session_state.imported_portfolio
+                                total_val = st.session_state.invested_amount
+                                current_port_map = {}
+                                from core.utils.symbol_mapper import SymbolMapper
+                                st.write("🔄 Auditing current holdings for rebalancing...")
+                                for _, row in df_imp.iterrows():
+                                    sym = row['Symbol']
+                                    qty = row['Quantity']
+                                    try:
+                                        yahoo_ticker = SymbolMapper.to_yahoo(sym)
+                                        ticker = yf.Ticker(f"{yahoo_ticker}.NS")
+                                        price = ticker.history(period="1d")["Close"].iloc[-1]
+                                        current_port_map[sym] = (qty * price) / total_val
+                                    except:
+                                        st.warning(f"⚠️ Could not fetch live price for {sym}. Defaulting to exit.")
+                                        current_port_map[sym] = 0.0
+
+                            from app.agents.allocator import PathAllocator
+                            allocator = PathAllocator(
+                                max_stocks=max_stocks,
+                                max_funds=max_funds,
+                                risk_profile=risk_prof,
+                                total_capital=total_cap,
+                                equity_split_percent=effective_eq_split,
+                                custom_macro_allocation=custom_macro,
+                                custom_cap_ratios=custom_cap
+                            )
+
+                            st.session_state.path_equity = allocator.build_equity_sleeve(current_portfolio=current_port_map)
+                            st.session_state.path_passive = allocator.build_passive_sleeve()
+                            eq = st.session_state.path_equity
+                            opt_method = eq[0].get('optimizer', 'Equal-Weight') if eq else 'Equal-Weight'
+                            st.session_state.allocator_meta = {
+                                "equity_cap": allocator.target_equity_capital,
+                                "defensive_cap": allocator.target_defensive_capital,
+                                "alpha_cap": allocator.alpha_capital,
+                                "beta_cap": allocator.beta_equity_capital,
+                                "regime_scale": f"{allocator.equity_allocation*100:.0f}%",
+                                "optimizer_method": opt_method,
+                            }
                         
                         # --- 🔄 PRE-SEAL TRANSITION AUDIT ---
                         st.write("🔄 Synchronizing Transition Metrics...")
@@ -707,7 +1004,7 @@ if persona == "📈 Investor":
                             "conviction": st.column_config.NumberColumn("Conviction", format="%.2f")
                         },
                         hide_index=True,
-                        use_container_width=True
+                        width="stretch"
                     )
                 else:
                     st.warning("No equities passed the strict QARP constraints.")
@@ -729,7 +1026,7 @@ if persona == "📈 Investor":
                             "conviction": st.column_config.NumberColumn("Conviction", format="%.2f")
                         },
                         hide_index=True,
-                        use_container_width=True
+                        width="stretch"
                     )
                 else:
                     st.warning("No passive vehicles found.")
@@ -751,9 +1048,11 @@ if persona == "📈 Investor":
                         qty = row['Quantity']
                         avg_price = row.get('avg_buy_price', 0)
                         
-                        # Get current price
+                        # Get current price via normalized Yahoo Ticker
                         try:
-                            curr_price = yf.Ticker(f"{sym}.NS").history(period="1d")["Close"].iloc[-1]
+                            from core.utils.symbol_mapper import SymbolMapper
+                            yahoo_ticker = SymbolMapper.to_yahoo(sym)
+                            curr_price = yf.Ticker(f"{yahoo_ticker}.NS").history(period="1d")["Close"].iloc[-1]
                         except:
                             curr_price = avg_price # Fallback
                         
@@ -806,7 +1105,7 @@ if persona == "📈 Investor":
                             "Tax Harvest": st.column_config.TextColumn("Tax Harvest")
                         },
                         hide_index=True,
-                        use_container_width=True
+                        width="stretch"
                     )
                     
                     # --- EXECUTION SUMMARY ---
@@ -834,6 +1133,7 @@ if persona == "📈 Investor":
             st.info("No goals found. Please complete the **Onboarding / Discovery** tab to see your goal feasibility analysis.")
         else:
             # Run feasibility checks for each goal
+            # Run feasibility checks for each goal
             results = [gia.run_feasibility_check(s) for s in sleeves]
             
             # Display metrics in columns
@@ -841,24 +1141,120 @@ if persona == "📈 Investor":
             for i, res in enumerate(results):
                 with cols[i]:
                     prob = res['p_success']
+                    target = res.get('target_value', 1)
+                    outcome = res.get('median_outcome', 0)
+                    sleeve = sleeves[i]
+                    horizon_yrs = sleeve.horizon_years
+                    current_assets = sleeve.current_assets
+
+                    # ── Progress: capital deployed vs. inflation-adjusted target ──
+                    # (NOT outcome/target — that gives misleading 100% when market does well)
+                    capital_progress = min(100, int((current_assets / target) * 100)) if target > 0 else 0
+                    # Separate signal: does the projected outcome actually cover the target?
+                    outcome_covers_target = outcome >= target
+                    shortfall = max(0, target - outcome)
+
+                    # ── SIP needed to close the shortfall ──
+                    r_monthly = 0.10 / 12   # 10% p.a. assumed
+                    n_months  = max(1, horizon_yrs * 12)
+                    try:
+                        sip_needed = shortfall * r_monthly / ((1 + r_monthly)**n_months - 1) if shortfall > 0 else 0
+                    except Exception:
+                        sip_needed = shortfall / n_months if shortfall > 0 else 0
+
+                    # ── Status logic ──
                     if prob > 0.95:
-                        status, color = "SECURE", "#10b981"
+                        status, color, icon = "SECURE", "#10b981", "✅"
+                        advice = "On track. Maintain current allocation."
+
                     elif prob > 0.80:
-                        status, color = "WATCH", "#f59e0b"
+                        status, color, icon = "WATCH", "#f59e0b", "⚠️"
+                        if shortfall > 0:
+                            advice = f"Minor gap. Add {fmt_inr(sip_needed)}/month SIP to secure this goal."
+                        else:
+                            advice = "Outcome exceeds target but variance is elevated. Consider de-risking 10-15% of allocation."
+
                     else:
-                        status, color = "DEFICIT", "#f43f5e"
-                    
+                        status, color, icon = "DEFICIT", "#f43f5e", "🚨"
+
+                        if current_assets == 0:
+                            # No capital at all
+                            advice = f"No capital allocated. Start a {fmt_inr(sip_needed or (target / n_months))}/month SIP or redirect funds from the Onboarding tab."
+
+                        elif res['label'] == "Survival":
+                            # Emergency fund — must be near-certain (99%+), not market-linked
+                            if outcome_covers_target:
+                                advice = (f"⚠️ Portfolio is too volatile for an emergency fund. "
+                                          f"Current success prob: {prob:.0%} — needs 99%+. "
+                                          f"Move {fmt_inr(current_assets)} to a Liquid Fund or FD.")
+                            else:
+                                top_up = target - current_assets
+                                advice = (f"Fund this first. Need {fmt_inr(top_up)} more. "
+                                          f"Keep in Liquid Fund/FD — not market-linked instruments.")
+
+                        elif outcome_covers_target:
+                            # Median outcome covers target but probability is low → VARIANCE problem
+                            advice = (f"Your median outcome ({fmt_inr(outcome)}) beats the target, "
+                                      f"but success probability is only {prob:.0%} due to high portfolio volatility. "
+                                      f"De-risk: shift 20-30% to debt/gold to improve certainty.")
+                        else:
+                            # True funding gap
+                            advice = f"Gap: {fmt_inr(shortfall)} over {horizon_yrs}yr. Start a {fmt_inr(sip_needed)}/month SIP to close it."
+
+                    # ── Progress bar: dual signal (capital funded + outcome coverage) ──
+                    outcome_pct = min(100, int((outcome / target) * 100)) if target > 0 else 0
+                    progress_label = f"Capital Funded: {capital_progress}% | Projected Coverage: {outcome_pct}%"
+
+                    asset_mandate = res.get("asset_mandate", "")
+                    mandate_colors = {
+                        "Survival":  "#0ea5e9",
+                        "Safety":    "#8b5cf6",
+                        "Growth":    "#f59e0b",
+                    }
+                    mandate_color = mandate_colors.get(res['label'], "#64748b")
+                    min_prob = {1: 0.99, 2: 0.95, 3: 0.70}.get(
+                        {"Survival": 1, "Safety": 2, "Growth": 3}.get(res['label'], 3), 0.70)
+
                     st.markdown(f"""
-                    <div class='card'>
-                        <h4>{res['label']}</h4>
-                        <p style='font-size:2rem; font-weight:700; color:{color};'>{status}</p>
-                        <small>Success Prob: {prob:.1%}</small><br>
-                        <small>Median Outcome: {fmt_inr(res['median_outcome'])}</small>
+                    <div class='card' style='border-top: 4px solid {color};'>
+                        <div style='display:flex; justify-content:space-between; align-items:center;'>
+                            <h4 style='margin:0;'>{icon} {res['label']}</h4>
+                            <span style='color:{color}; font-weight:700;'>{status}</span>
+                        </div>
+                        <div style='margin-bottom:0.5rem;'>
+                            <span style='background:{mandate_color}20; color:{mandate_color};
+                                         padding:0.15rem 0.6rem; border-radius:20px;
+                                         font-size:0.75rem; font-weight:600;'>
+                                🏦 {asset_mandate}
+                            </span>
+                            <span style='font-size:0.75rem; color:#94a3b8; margin-left:0.5rem;'>
+                                Needs {min_prob:.0%} probability to be SECURE
+                            </span>
+                        </div>
+                        <p style='font-size:0.8rem; color:#64748b; margin-bottom:0.3rem;'>
+                            Target: <b>{fmt_inr(target)}</b> (inflation-adjusted over {horizon_yrs}yr)
+                        </p>
+                        <p style='font-size:0.8rem; color:#64748b; margin-bottom:0.4rem;'>{progress_label}</p>
+                        <div style='background:#f1f5f9; border-radius:10px; height:8px; width:100%; margin-bottom:0.3rem;'>
+                            <div style='background:{color}; height:8px; width:{capital_progress}%; border-radius:10px;'></div>
+                        </div>
+                        <p style='font-size:0.75rem; color:#94a3b8; margin-bottom:0.8rem;'>
+                            Capital deployed: {fmt_inr(current_assets)}
+                        </p>
+                        <small style='color:#64748b;'>Prob. of Success: <b style='color:{color}'>{prob:.1%}</b></small><br>
+                        <small style='color:#64748b;'>Median Projected Outcome: <b>{fmt_inr(outcome)}</b></small>
+                        <div style='margin-top:1rem; padding-top:0.8rem; border-top:1px solid #e2e8f0;'>
+                            <p style='font-size:0.85rem; font-weight:600; color:#1e293b; margin-bottom:0;'>📋 Fiduciary Action:</p>
+                            <p style='font-size:0.85rem; color:#64748b;'>{advice}</p>
+                        </div>
                     </div>
                     """, unsafe_allow_html=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
-            st.caption("🟢 **SECURE**: Prob > 95% | 🟡 **WATCH**: Prob 80-95% | 🔴 **DEFICIT**: Prob < 80%")
+            st.caption(
+                "🟢 **SECURE** | 🟡 **WATCH** | 🔴 **DEFICIT**  \n"
+                "Thresholds: Survival ≥ 99% (Liquid/FD) · Safety ≥ 95% (Balanced/Debt) · Growth ≥ 70% (Equity)"
+            )
 
 
     elif nav == "Voice & Insights":
@@ -915,46 +1311,31 @@ if persona == "📈 Investor":
                     hovermode="x unified",
                     font=dict(family="Inter", size=12)
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
                 # --- NEW: Risk Metrics Table ---
                 st.markdown("##### 🛡️ Risk & Reward Audit (3-Year)")
                 
                 metrics = []
-                # Re-calculate composite returns for Proposed and Investor
-                composite_returns = pd.DataFrame(index=daily_returns.index)
+                # Use daily_returns which now includes synthesised portfolio columns
+                composite_returns = daily_returns.copy()
                 
-                # A. Benchmarks
-                bench_map = {
-                    "Nifty 50": "^NSEI", 
-                    "Nifty Next 50": "JUNIORBEES.NS", 
-                    "Nifty Midcap 100": "^NSMIDCP100", 
-                    "Nifty Smallcap 100": "^NSESMLCP100"
-                }
-                for name, t in bench_map.items():
-                    if t in daily_returns.columns: composite_returns[name] = daily_returns[t]
-                
-                # B. Proposed
-                prop_weights = {}
-                for s in eq_sleeve: prop_weights[f"{s['symbol']}.NS"] = s.get('target_weight', 0)
-                for f in pass_sleeve: 
-                    t = f['ticker'] if "^" in f['ticker'] else f"{f['ticker']}.NS"
-                    prop_weights[t] = f.get('target_weight', 0)
-                
-                p_ret = pd.Series(0.0, index=daily_returns.index)
-                for t, w in prop_weights.items():
-                    if t in daily_returns.columns: p_ret += daily_returns[t] * w
-                composite_returns["Proposed Portfolio"] = p_ret
+                # Ensure benchmarks are also available if not already in columns
+                bench_map = {"Nifty 50": "^NSEI", "Nifty Next 50": "JUNIORBEES.NS"}
+                for name, ticker in bench_map.items():
+                    if ticker in composite_returns.columns and name not in composite_returns.columns:
+                        composite_returns[name] = composite_returns[ticker]
 
-                # C. Investor
-                if inv_df is not None:
-                    inv_ret = pd.Series(0.0, index=daily_returns.index)
-                    for _, row in inv_df.iterrows():
-                        t = f"{row['Symbol']}.NS"
-                        if t in daily_returns.columns: inv_ret += daily_returns[t] * (1.0/len(inv_df))
-                    composite_returns["Investor Portfolio"] = inv_ret
-
-                for col in composite_returns.columns:
+                # Filter to only show relevant benchmarks and the two portfolios
+                display_cols = [
+                    "Nifty 50", "Proposed Portfolio", "Investor Portfolio", 
+                    "Nifty Next 50"
+                ]
+                
+                for col in display_cols:
+                    if col not in composite_returns.columns:
+                        continue
+                    
                     rets = composite_returns[col]
                     if rets.abs().sum() == 0: continue # Skip if no data
                     
@@ -979,7 +1360,7 @@ if persona == "📈 Investor":
                 st.table(pd.DataFrame(metrics))
             else:
                 st.warning("⚠️ Market connectivity required for live 12-month benchmarking. Showing simulated resilience metrics below.")
-                st.image("https://via.placeholder.com/800x400/1e293b/6366f1?text=Historical+Benchmarking+Requires+Live+Data+Feed", use_container_width=True)
+                st.image("https://via.placeholder.com/800x400/1e293b/6366f1?text=Historical+Benchmarking+Requires+Live+Data+Feed", width="stretch")
 
         st.markdown("##### 💬 Fiduciary Chat")
         

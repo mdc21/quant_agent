@@ -15,7 +15,10 @@ class YFinanceClient:
 
     def get_latest_fundamentals(self, symbol: str) -> dict:
         logger.info(f"Fetching fundamentals for {symbol}...")
-        yf_symbol = f"{symbol}.NS" if not symbol.endswith(('.NS', '.BO')) else symbol
+        from core.utils.symbol_mapper import SymbolMapper
+        # Strip '$' and map to Yahoo Ticker
+        yahoo_ticker = SymbolMapper.to_yahoo(symbol.strip().lstrip('$'))
+        yf_symbol = f"{yahoo_ticker}.NS" if not yahoo_ticker.endswith(('.NS', '.BO')) else yahoo_ticker
         
         try:
             ticker = yf.Ticker(yf_symbol)

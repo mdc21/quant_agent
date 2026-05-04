@@ -85,6 +85,8 @@ class ScreenerClient:
                     if fundamentals.get("total_revenue") is None:
                         val_rev2 = self._extract_metric(df_pl, latest_col, "revenue")
                         if val_rev2 is not None: fundamentals["total_revenue"] = val_rev2
+                else:
+                    logger.warning(f"No valid annual columns found for {clean_sym} in P&L.")
 
             # 2. Balance Sheet
             bs_section = soup.find(id="balance-sheet")
@@ -167,6 +169,9 @@ class ScreenerClient:
                 fcf_checked = 0
                 # Exclude TTM column
                 cols = [c for c in df_cf.columns if "TTM" not in str(c)]
+                if not cols:
+                    return result
+                    
                 years = cols[-4:] if len(cols) >= 4 else cols  # Up to 4 years
 
                 for year_col in years:

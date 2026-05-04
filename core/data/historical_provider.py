@@ -46,8 +46,16 @@ class HistoricalProvider:
             return daily_close.loc[daily_close.index >= start_date]
             
         logger.warning(f"Breeze Price Data missing for {symbol}. Falling back to YFinance...")
-        yf_symbol = f"{symbol}.NS"
-        if symbol == "NIFTY":
+        
+        # CLEANUP: Strip '$' prefix if it exists (common in portfolio exports)
+        clean_symbol = symbol.strip().lstrip('$')
+        
+        # REVERSE MAPPING: Convert Breeze Stock Code back to NSE Ticker if needed
+        from core.utils.symbol_mapper import SymbolMapper
+        yahoo_ticker = SymbolMapper.to_yahoo(clean_symbol)
+        
+        yf_symbol = f"{yahoo_ticker}.NS"
+        if yahoo_ticker == "NIFTY":
             yf_symbol = "^NSEI"
             
         try:

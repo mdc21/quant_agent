@@ -69,8 +69,6 @@ class DataStore:
         df.set_index("as_of_date", inplace=True)
         
         # Write/Update the symbol in ArcticDB
-        # Using 'write' or 'append' depending on use case. 
-        # Here we use 'write' which creates a new version of the entire series for that symbol.
         self.lib.write(
             symbol, 
             df, 
@@ -93,18 +91,22 @@ class DataStore:
     def list_symbols(self) -> List[str]:
         return self.lib.list_symbols()
 
-    def save_goals(self, user_id: str, goals: List[Dict[str, Any]], risk_tolerance: str = "Moderate"):
+    def save_goals(self, user_id: str, goals: List[Dict[str, Any]], risk_tolerance: str = "Moderate", inflation_rate: float = 0.06, **kwargs):
         """
-        Saves user goals and risk tolerance to the user_goals library.
+        Saves user goals, risk tolerance, and inflation rate to the user_goals library.
         """
         df = pd.DataFrame(goals)
-        # Store metadata like risk_tolerance in the version metadata
+        # Store metadata like risk_tolerance and inflation_rate in the version metadata
         self.goals_lib.write(
             user_id, 
             df, 
-            metadata={"risk_tolerance": risk_tolerance, "updated_at": str(datetime.datetime.now())}
+            metadata={
+                "risk_tolerance": risk_tolerance, 
+                "inflation_rate": inflation_rate,
+                "updated_at": str(datetime.datetime.now())
+            }
         )
-        print(f"Goals saved for user: {user_id}")
+        print(f"Goals saved for user: {user_id} with inflation_rate: {inflation_rate}")
 
     def get_goals(self, user_id: str) -> Dict[str, Any]:
         """
@@ -116,6 +118,6 @@ class DataStore:
         version = self.goals_lib.read(user_id)
         return {
             "goals": version.data.to_dict('records'),
-            "risk_tolerance": version.metadata.get("risk_tolerance", "Moderate")
+            "risk_tolerance": version.metadata.get("risk_tolerance", "Moderate"),
+            "inflation_rate": version.metadata.get("inflation_rate", 0.06)
         }
-

@@ -24,6 +24,8 @@ class IngestionEngine:
         # 1. Fetch raw data from Breeze API
         from core.utils.symbol_mapper import SymbolMapper
         breeze_code = SymbolMapper.to_breeze(symbol)
+        if breeze_code != symbol:
+            print(f"SymbolMapper: Translated {symbol} -> {breeze_code} for Breeze fetch.")
         
         raw_data = self.breeze.get_historical_data_v2(
             interval="1day",

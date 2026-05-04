@@ -27,5 +27,5 @@ mlruns/
 scratch/
 
 # Data Vaults
-data/
+/data/
 temp/

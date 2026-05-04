@@ -7,6 +7,9 @@ from app.agents.pfra import PassiveResearchAgent
 from app.agents.genpoa import PortfolioArchitect
 from core.data.agent_schema import StockCandidate, PassiveVehicle
 from sklearn.covariance import LedoitWolf
+from core.utils.logger import get_data_logger
+
+logger = get_data_logger("PathAllocator")
 
 
 class PathAllocator:
@@ -78,10 +81,13 @@ class PathAllocator:
     # PRIVATE HELPERS
     # ------------------------------------------------------------------
 
-    def _fetch_metadata(self, symbol: str) -> Tuple[str, str]:
-        """Hydrate sector and market-cap category via yfinance."""
+    def _fetch_single_metadata(self, symbol: str) -> Tuple[str, str, str]:
+        """Fetch metadata for a single symbol (used in parallel pool)."""
         try:
-            info = yf.Ticker(f"{symbol}.NS").info
+            clean_sym = symbol.strip().lstrip('$')
+            from core.utils.symbol_mapper import SymbolMapper
+            yahoo_ticker = SymbolMapper.to_yahoo(clean_sym)
+            info = yf.Ticker(f"{yahoo_ticker}.NS").info
             sector = info.get("sector", "Unknown")
             mcap = info.get("marketCap", 0)
             if mcap >= 500_000_000_000:
@@ -90,48 +96,81 @@ class PathAllocator:
                 cap = "Mid Cap"
             else:
                 cap = "Small Cap"
-            return sector, cap
+            return symbol, sector, cap
         except Exception:
-            return "Unknown", "Mid Cap"
+            return symbol, "Unknown", "Mid Cap"
+
+    def _fetch_metadata_bulk(self, symbols: List[str]) -> dict:
+        """Parallelise metadata hydration across all candidates using a thread pool."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        results = {}
+        logger.info(f"PathAllocator: Parallel metadata hydration for {len(symbols)} symbols...")
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            futures = {pool.submit(self._fetch_single_metadata, s): s for s in symbols}
+            for future in as_completed(futures):
+                sym, sector, cap = future.result()
+                results[sym] = (sector, cap)
+        logger.info("PathAllocator: Parallel metadata hydration complete.")
+        return results
 
     def _fetch_price_history(self, symbols: List[str], days: int = 180) -> pd.DataFrame:
         """
-        Step 1: Download 180-day daily closing prices for each symbol via the institutional ArcticDB pipeline.
-        Returns a DataFrame of DAILY RETURNS (T × N), dropping symbols with insufficient history.
+        Step 1: Bulk-download price history for all symbols in a single yf.download() call.
+        Falls back to sequential ArcticDB reads if bulk download fails.
+        Returns a DataFrame of DAILY RETURNS (T × N).
         """
-        print(f"PathAllocator: Fetching {days}-day price history for {len(symbols)} symbols from Local Database...")
+        logger.info(f"PathAllocator: Bulk-fetching {days}-day price history for {len(symbols)} symbols...")
+        
+        from core.utils.symbol_mapper import SymbolMapper
+        # Build Yahoo tickers for bulk download
+        ticker_map = {}  # yahoo_ticker -> original_symbol
+        for sym in symbols:
+            yt = SymbolMapper.to_yahoo(sym.strip().lstrip('$'))
+            ticker_map[f"{yt}.NS"] = sym
+
+        yf_tickers = list(ticker_map.keys())
         
         try:
+            raw = yf.download(
+                yf_tickers,
+                period=f"{days}d",
+                interval="1d",
+                progress=False,
+                group_by="ticker",
+                auto_adjust=True,
+                threads=True
+            )
+            # Extract Close prices — handle single vs multi-ticker layout
+            if isinstance(raw.columns, pd.MultiIndex):
+                close = raw.xs("Close", axis=1, level=1)
+            else:
+                close = raw[["Close"]].rename(columns={"Close": yf_tickers[0]})
+
+            # Rename back to original symbols
+            close = close.rename(columns={yt: ticker_map[yt] for yt in yf_tickers if yt in close.columns})
+
+        except Exception as e:
+            logger.warning(f"PathAllocator: Bulk download failed ({e}). Falling back to sequential ArcticDB reads...")
             from core.data.historical_provider import HistoricalProvider
-            # Instantiate without breeze token; it will pull from ArcticDB or fallback to yfinance internally
             provider = HistoricalProvider()
-            
             price_series = {}
             for sym in symbols:
-                # get_price_series automatically checks ArcticDB first
                 series = provider.get_price_series(sym, days)
                 if not series.empty:
                     price_series[sym] = series
-        except Exception as e:
-            print(f"PathAllocator: Database/HistoricalProvider connection failed ({e}). Falling back to identity.")
-            return pd.DataFrame()
+            if not price_series:
+                return pd.DataFrame()
+            close = pd.DataFrame(price_series)
 
-        if not price_series:
-            print(f"PathAllocator: All price downloads failed. Falling back to identity covariance.")
-            return pd.DataFrame()
-
-        raw = pd.DataFrame(price_series)
-        raw = raw.ffill().dropna()
-
-        # Drop columns with > 20% missing data
+        close = close.ffill()
         threshold = int(days * 0.8)
-        raw = raw.dropna(axis=1, thresh=threshold)
-        
-        if raw.empty:
+        close = close.dropna(axis=1, thresh=threshold)
+
+        if close.empty:
             return pd.DataFrame()
-            
-        returns = raw.pct_change().dropna()
-        print(f"PathAllocator: DB Price history ready — {len(returns)} days, {len(returns.columns)} symbols.")
+
+        returns = close.pct_change().dropna()
+        logger.info(f"PathAllocator: Price history ready — {len(returns)} days, {len(returns.columns)} symbols.")
         return returns
 
     def _build_expected_returns(
@@ -150,7 +189,7 @@ class PathAllocator:
             exp_ret = self._base_return * (0.5 + conv)
             expected[sym] = exp_ret
         series = pd.Series(expected, name="expected_return")
-        print(f"PathAllocator [BL Views]: {series.to_dict()}")
+        logger.info(f"PathAllocator [BL Views]: {series.to_dict()}")
         return series
 
     def _build_covariance(self, returns: pd.DataFrame, symbols: List[str]) -> pd.DataFrame:
@@ -160,7 +199,7 @@ class PathAllocator:
         """
         available = [s for s in symbols if s in returns.columns]
         if len(available) < 2:
-            print("PathAllocator: Insufficient price data for LW covariance. Using diagonal identity.")
+            logger.warning("PathAllocator: Insufficient price data for LW covariance. Using diagonal identity.")
             n = len(symbols)
             return pd.DataFrame(
                 np.eye(n) * 0.04,  # ~20% annualised vol as diagonal
@@ -178,7 +217,7 @@ class PathAllocator:
         )
         # Ensure all requested symbols are present
         cov_annual = cov_annual.reindex(index=symbols, columns=symbols).fillna(0)
-        print(f"PathAllocator [LW Cov]: Covariance matrix computed ({cov_annual.shape}).")
+        logger.info(f"PathAllocator [LW Cov]: Covariance matrix computed ({cov_annual.shape}).")
         return cov_annual
 
     # ------------------------------------------------------------------
@@ -193,16 +232,18 @@ class PathAllocator:
         Builds the alpha (direct equity) sleeve using the full optimizer pipeline.
         Now supports rebalancing by accepting a current_portfolio mapping {symbol: weight}.
         """
-        print("PathAllocator: Screening entire universe via EQRA...")
+        logger.info("PathAllocator: Screening entire universe via EQRA...")
         candidates = self.eqra.screen_stocks("ALL")
         if not candidates:
             return []
 
-        # Hydrate sector / cap metadata
-        print(f"PathAllocator: Hydrating metadata for {len(candidates)} candidates...")
+        # Hydrate sector / cap metadata — PARALLEL (16 threads)
+        logger.info(f"PathAllocator: Hydrating metadata for {len(candidates)} candidates in parallel...")
+        meta_map = self._fetch_metadata_bulk([c.symbol for c in candidates])
+        
         hydrated: List[Dict[str, Any]] = []
         for c in candidates:
-            sector, cap = self._fetch_metadata(c.symbol)
+            sector, cap = meta_map.get(c.symbol, ("Unknown", "Mid Cap"))
             hydrated.append({
                 "symbol": c.symbol,
                 "q_score": c.factors.get("q_score", 0),
@@ -278,13 +319,13 @@ class PathAllocator:
                     if beta > 1.2:
                         # High Volatility: Suppress Cap to 12%
                         sector_caps[sect] = 0.12
-                        print(f"PathAllocator [Risk Overlay]: {sect} flagged as HIGH VOLATILITY (Beta={beta:.2f}). Capping at 12%.")
+                        logger.info(f"PathAllocator [Risk Overlay]: {sect} flagged as HIGH VOLATILITY (Beta={beta:.2f}). Capping at 12%.")
                     elif beta < 0.8:
                         # Low Volatility: Anchor Floor to 5%
                         sector_floors[sect] = 0.05
-                        print(f"PathAllocator [Risk Overlay]: {sect} flagged as LOW VOLATILITY (Beta={beta:.2f}). Anchoring floor at 5%.")
+                        logger.info(f"PathAllocator [Risk Overlay]: {sect} flagged as LOW VOLATILITY (Beta={beta:.2f}). Anchoring floor at 5%.")
 
-        print(f"PathAllocator: Optimizing {len(symbols)} stocks for {self.risk_profile} (60:25:15 Capital Mandate)...")
+        logger.info(f"PathAllocator: Optimizing {len(symbols)} stocks for {self.risk_profile} (60:25:15 Capital Mandate)...")
         weight_dict, method = self.genpoa.optimize_sleeve(
             symbols, 
             expected_returns, 
@@ -318,7 +359,7 @@ class PathAllocator:
         Passive equity funds use equal weight within beta_equity_capital.
         Defensive funds use equal weight within target_defensive_capital.
         """
-        print("PathAllocator: Fetching Passive Funds via PFRA...")
+        logger.info("PathAllocator: Fetching Passive Funds via PFRA...")
         # Pass None to trigger the dynamic AMFI Smart-Beta scan
         equity_funds = self.pfra.screen_funds(None)[: self.max_funds]
         defensive_funds = self.pfra.screen_defensive_funds()

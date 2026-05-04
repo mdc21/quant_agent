@@ -70,9 +70,28 @@ class EquityResearchAgent:
                         fundamentals = df.iloc[0].to_dict()
                         live_universe[sym] = fundamentals
                 else:
-                    print(f"EQRA: Missing pre-ingested data for {sym}. Run batch ingestion first.")
+                    # SELF-HEALING: Fetch missing fundamentals in real-time
+                    print(f"EQRA: Missing pre-ingested data for {sym}. Attempting real-time fiduciary hydration...")
+                    from core.data.fiduciary_validator import FiduciaryValidator
+                    import pandas as pd
+                    validator = FiduciaryValidator()
+                    is_grade, fundamentals = validator.validate_fundamentals(sym)
+                    
+                    if fundamentals:
+                        fundamentals['fiduciary_grade'] = is_grade
+                        # Persist to ArcticDB for future runs
+                        df_to_save = pd.DataFrame([fundamentals])
+                        if 'date' in df_to_save.columns and not df_to_save['date'].isnull().all():
+                            df_to_save['date'] = pd.to_datetime(df_to_save['date'])
+                            df_to_save.set_index('date', inplace=True)
+                        lib.write(symbol_key, df_to_save)
+                        
+                        live_universe[sym] = fundamentals
+                        print(f"EQRA: Successfully hydrated and persisted fundamentals for {sym}.")
+                    else:
+                        print(f"EQRA: Real-time hydration failed for {sym}. Stock will be ignored.")
             except Exception as e:
-                print(f"EQRA: Error reading {sym} from vault: {e}")
+                print(f"EQRA: Error during hydration/reading for {sym}: {e}")
 
         if not live_universe:
             return []

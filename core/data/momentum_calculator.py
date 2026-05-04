@@ -41,13 +41,12 @@ class MomentumCalculator:
         price_series = {}
         
         for sym in symbols:
-            # get_price_series automatically checks ArcticDB first
             series = provider.get_price_series(sym, total_days)
             if not series.empty:
                 price_series[sym] = series
-
+                
         if not price_series:
-            logger.warning("MomentumCalculator: All price downloads failed via DB/yfinance. Returning empty.")
+            logger.warning("MomentumCalculator: All price downloads failed. Yahoo Finance may be rate-limiting this large batch. Using neutral scores.")
             return pd.DataFrame()
 
         raw = pd.DataFrame(price_series)
