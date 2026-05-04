@@ -50,6 +50,14 @@ class PathAllocator:
         # --- Base return assumption by risk profile (annualised) ---
         self._base_return = {"Aggressive": 0.15, "Balanced": 0.11, "Conservative": 0.08}[risk_profile]
 
+        # --- Multi-Cap Sieve Targets (Large:Mid:Small) ---
+        cap_ratios = {
+            "Aggressive": (0.60, 0.25, 0.15),
+            "Balanced": (0.70, 0.20, 0.10),
+            "Conservative": (0.80, 0.15, 0.05)
+        }
+        self.large_pct, self.mid_pct, self.small_pct = cap_ratios.get(risk_profile, (0.70, 0.20, 0.10))
+
         self.eqra = EquityResearchAgent()
         self.pfra = PassiveResearchAgent()
         self.genpoa = PortfolioArchitect(
@@ -190,10 +198,10 @@ class PathAllocator:
                 "cap": cap,
             })
 
-        # Apply 70:20:10 multi-cap constraint and 25% sector cap
-        target_large = max(1, int(self.max_stocks * 0.70))
-        target_mid   = max(1, int(self.max_stocks * 0.20))
-        target_small = max(1, int(self.max_stocks * 0.10))
+        # Apply risk-based multi-cap constraint and 25% sector cap
+        target_large = max(1, int(self.max_stocks * self.large_pct))
+        target_mid   = max(1, int(self.max_stocks * self.mid_pct))
+        target_small = max(1, int(self.max_stocks * self.small_pct))
         while target_large + target_mid + target_small > self.max_stocks:
             target_large -= 1
         while target_large + target_mid + target_small < self.max_stocks:
