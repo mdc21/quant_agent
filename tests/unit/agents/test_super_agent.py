@@ -29,7 +29,11 @@ class TestSuperAgent(unittest.TestCase):
             GoalSleeve(label="Test", tier=1, target_value=1e6, horizon_years=10, min_prob_success=0.99, constraints=[])
         ]
         self.mocks['MRA'].get_current_regime.return_value = "BULL"
-        self.mocks['EQRA'].screen_stocks.return_value = ["RELIND", "TCS"]
+        from core.data.agent_schema import StockCandidate
+        self.mocks['EQRA'].screen_stocks.return_value = [
+            StockCandidate(symbol="RELIND", conviction_score=0.8, rationale="Quality", factors={}, lineage_id="L1"),
+            StockCandidate(symbol="TCS", conviction_score=0.7, rationale="Stability", factors={}, lineage_id="L1")
+        ]
         
         # GENPOA returns target weights
         self.mocks['GENPOA'].architect_portfolio.return_value = np.array([0.5, 0.5])
@@ -64,6 +68,10 @@ class TestSuperAgent(unittest.TestCase):
         self.mocks['RAA'].inspect_portfolio.side_effect = [fail_report, pass_report]
         
         # Other mocks
+        from core.data.agent_schema import StockCandidate
+        self.mocks['EQRA'].screen_stocks.return_value = [
+            StockCandidate(symbol="RELIND", conviction_score=0.8, rationale="Quality", factors={}, lineage_id="L1")
+        ]
         self.mocks['GIA'].interpret_goals.return_value = [MagicMock()]
         self.mocks['MRA'].get_current_regime.return_value = "SIDEWAYS"
         self.mocks['GENPOA'].architect_portfolio.return_value = np.array([0.4, 0.4])

@@ -8,21 +8,21 @@ def test_eqra_logic():
     # 1. Mock Universe Fundamentals
     universe_fundamentals = {
         "RELIANCE": {
-            "net_income": 1000, "roa": 0.12, "roa_prev": 0.10, "cfo": 1200,
+            "net_income": 1000, "total_assets": 8000, "roa": 0.12, "roa_prev": 0.10, "operating_cash_flow": 1200,
             "debt_equity": 0.4, "debt_equity_prev": 0.5, "current_ratio": 1.5, "current_ratio_prev": 1.4,
             "shares_out": 100, "shares_out_prev": 100,
             "gross_margin": 0.25, "gross_margin_prev": 0.24, "asset_turnover": 0.8, "asset_turnover_prev": 0.7,
             "roce": 0.18, "lineage_id": "SESS_20260426_FUND"
         },
         "JUNK_CORP": {
-            "net_income": -50, "roa": -0.05, "roa_prev": 0.02, "cfo": -100,
+            "net_income": -50, "total_assets": 5000, "roa": -0.05, "roa_prev": 0.02, "operating_cash_flow": -100,
             "debt_equity": 2.5, "debt_equity_prev": 2.0, "current_ratio": 0.8, "current_ratio_prev": 0.9,
             "shares_out": 120, "shares_out_prev": 100,
             "gross_margin": 0.10, "gross_margin_prev": 0.15, "asset_turnover": 0.4, "asset_turnover_prev": 0.5,
             "roce": 0.02, "lineage_id": "SESS_20260426_FUND"
         },
         "HDFC_BANK": {
-            "net_income": 800, "roa": 0.15, "roa_prev": 0.14, "cfo": 900,
+            "net_income": 800, "total_assets": 4000, "roa": 0.15, "roa_prev": 0.14, "operating_cash_flow": 900,
             "debt_equity": 0.1, "debt_equity_prev": 0.1, "current_ratio": 1.2, "current_ratio_prev": 1.1,
             "shares_out": 500, "shares_out_prev": 500,
             "gross_margin": 0.40, "gross_margin_prev": 0.38, "asset_turnover": 0.6, "asset_turnover_prev": 0.6,

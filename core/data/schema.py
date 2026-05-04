@@ -1,6 +1,6 @@
 import datetime
 from typing import Dict, Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, field_serializer
 
 class PITMarketData(BaseModel):
     """
@@ -19,7 +19,8 @@ class PITMarketData(BaseModel):
     source: str = Field(default="icici_breeze_v1", description="Data lineage source")
     quality_score: float = Field(default=1.0, description="DQ validation score")
 
-    class Config:
-        json_encoders = {
-            datetime.datetime: lambda v: v.isoformat()
-        }
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_serializer('as_of_date', 'recorded_at')
+    def serialize_dt(self, dt: datetime.datetime, _info):
+        return dt.isoformat()

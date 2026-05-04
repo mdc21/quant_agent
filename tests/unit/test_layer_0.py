@@ -1,29 +1,29 @@
 import datetime
 import time
 import pandas as pd
-from core.data.schema import MarketDataRecord
+from core.data.schema import PITMarketData
 from core.data.store import DataStore
-from core.data.ingestion import Ingestor, DataQualityGate
 
 def test_pit_functionality():
     print("Starting Layer 0 PIT Verification...")
     
     # Initialize components
-    store = DataStore(uri="lmdb://./data/arctic_test")
-    ingestor = Ingestor(source_id="test_source")
+    store = DataStore()
     
     symbol = "RELIANCE"
     event_time = datetime.datetime(2024, 1, 1, 10, 0)
     
     # 1. First Ingestion (Version 1)
-    record1 = MarketDataRecord(
+    record1 = PITMarketData(
         symbol=symbol,
+        exchange="NSE",
+        data={"close": 2500.0, "volume": 100000},
         as_of_date=event_time,
-        recorded_at=datetime.datetime.utcnow(),
-        data_payload={"close": 2500.0, "volume": 100000},
-        source_id="source_v1"
+        recorded_at=datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=10),
+        lineage_id="L1",
+        source="test"
     )
-    store.write_records([record1])
+    store.write_records(symbol, [record1])
     print(f"Stored Version 1 at {record1.recorded_at}")
     
     time.sleep(1) # Ensure recorded_at is different
@@ -31,14 +31,16 @@ def test_pit_functionality():
     time.sleep(1)
     
     # 2. Correction Ingestion (Version 2 - same event time, different system time)
-    record2 = MarketDataRecord(
+    record2 = PITMarketData(
         symbol=symbol,
+        exchange="NSE",
+        data={"close": 2505.0, "volume": 100000}, # Corrected price
         as_of_date=event_time,
-        recorded_at=datetime.datetime.utcnow(),
-        data_payload={"close": 2505.0, "volume": 100000}, # Corrected price
-        source_id="source_v1_correction"
+        recorded_at=datetime.datetime.now(datetime.timezone.utc),
+        lineage_id="L1",
+        source="test_correction"
     )
-    store.write_records([record2])
+    store.write_records(symbol, [record2])
     print(f"Stored Version 2 at {record2.recorded_at}")
     
     # 3. Verification

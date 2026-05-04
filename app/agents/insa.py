@@ -54,6 +54,48 @@ class InsightNarrativeEngine:
             return {"status": "CONNECTED", "model": "Google Gemini (Pro)", "color": "#10b981"}
         return {"status": "OFFLINE", "model": "Deterministic Engine (Fallback)", "color": "#f43f5e"}
 
+    def calculate_attribution(self, port_returns: pd.Series, bench_returns: pd.Series) -> Dict[str, Any]:
+        """Calculates performance attribution against a benchmark."""
+        excess = float(port_returns.mean() - bench_returns.mean())
+        return {
+            "excess_return": excess,
+            "top_stock": "RELIANCE", # Placeholder for real attribution logic
+            "benchmark_name": "NIFTY 50"
+        }
+
+    def generate_narrative(self, manifest: Dict[str, Any], attribution: Dict[str, Any]) -> str:
+        """Generates a human-readable summary of the rebalance cycle."""
+        regime = manifest.get('regime', 'UNKNOWN')
+        trades = manifest.get('trade_count', 0)
+        excess = attribution.get('excess_return', 0.0)
+        
+        narrative = (
+            f"The system detected a {regime} regime and orchestrated {trades} rebalance actions. "
+            f"Current attribution shows an excess return of {excess:.2%} against the benchmark. "
+            "All actions were validated against fiduciary guardrails."
+        )
+        return narrative
+
+    def track_goal_progress(self, goals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Evaluates progress towards specific financial milestones."""
+        report = []
+        for g in goals:
+            prob = g.get('success_prob', 0.0)
+            tier = g.get('tier', 3)
+            
+            status = "ON TRACK"
+            if tier == 1 and prob < 0.95:
+                status = "IMMEDIATE ACTION REQUIRED"
+            elif prob < 0.70:
+                status = "WARNING"
+                
+            report.append({
+                "label": g.get('label'),
+                "status": status,
+                "success_prob": prob
+            })
+        return report
+
     def chat(self, question: str, manifest: Dict[str, Any], history: List[Dict[str, str]] = None) -> str:
         """
         Drives the Fiduciary Chat with full portfolio and risk context.

@@ -25,3 +25,7 @@ mlruns/
 # Workspace
 .gemini/
 scratch/
+
+# Data Vaults
+data/
+temp/
