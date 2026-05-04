@@ -1,0 +1,45 @@
+# --- Core Environment & Type Safety ---
+python-dotenv>=1.0.0
+pydantic>=2.0.0           # For Typed Agent Message Bus [cite: 231]
+typing-extensions>=4.5.0
+
+# --- Layer 0: Data Orchestration & Persistence ---
+arcticdb>=1.6.0           # High-performance PIT time-series store 
+influxdb-client>=1.36.0   # Secondary time-series store 
+psycopg2-binary>=2.9.0    # Fundamental store (PostgreSQL) 
+feast>=0.31.0             # Feature store for ML signals 
+boto3>=1.26.0             # Scenario library (S3-compatible) 
+redis>=4.5.0              # Feature store caching 
+
+# --- Layer 1: Intelligence Engine (ML & Quant) ---
+numpy>=1.24.0             # Monte Carlo probability engine [cite: 35]
+pandas>=2.0.0             # Data manipulation [cite: 53]
+scipy>=1.10.0             # Tail dependency (Copula) analysis [cite: 123]
+scikit-learn>=1.2.0       # Ledoit-Wolf shrinkage & Risk models [cite: 69, 108]
+xgboost>=1.7.0            # Regime Classifier ensemble [cite: 69]
+hmmlearn>=0.3.0           # Hidden Markov Models for regimes [cite: 69]
+cvxpy>=1.3.0              # Portfolio Optimization (GENPOA) [cite: 108, 111]
+PyPortfolioOpt>=1.5.0     # Black-Litterman & HRP cross-checks [cite: 109, 110]
+mlflow>=2.3.0             # Model Registry & Lifecycle management [cite: 71]
+torch>=2.0.0              # Deep learning/Return forecasting (M-series optimized)
+
+# --- Layer 2 & 3: Agent Mesh & Orchestration ---
+langgraph>=0.0.10         # Multi-agent workflow and arbitration [cite: 182]
+langchain>=0.0.200        # LLM-based narrative generation (INSA) [cite: 138]
+temporalio>=1.3.0         # Reliable orchestration for Tier 3/4 tasks [cite: 199]
+
+# --- Layer 4: Governance & Compliance ---
+pymerkle>=5.0.0           # Immutable Merkle tree audit log [cite: 187]
+requests>=2.31.0          # API monitoring for regulatory feeds [cite: 194]
+
+# --- Layer 5: Output & Reporting ---
+streamlit>=1.22.0         # Internal Risk & Performance Dashboards [cite: 176]
+matplotlib>=3.7.0         # Monte Carlo fan charts [cite: 215]
+plotly>=5.14.0            # Interactive factor heatmaps [cite: 139]
+
+# --- Connectivity: Indian & Global Market APIs ---
+upstox-python-sdk>=2.0.0      # Primary data feed (Price, Corp Actions) [cite: 53]
+yfinance>=0.2.0               # Secondary/Backup price feeds
+breeze-connect>=1.0.38        # ICICIDIRECT API
+alpha_vantage>=2.3.0          # Global data backup
+# mfapi-client                # (Conceptual) Custom wrapper for mfapi.in

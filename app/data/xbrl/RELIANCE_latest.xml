@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xbrli:xbrl xmlns:ind-as="http://www.icai.org/xbrl/taxonomy/2022-03-31/ind-as">
+  <ind-as:ProfitLossForPeriod>1500000000.0</ind-as:ProfitLossForPeriod>
+  <ind-as:TotalAssets>50000000000.0</ind-as:TotalAssets>
+  <ind-as:TotalLiabilities>20000000000.0</ind-as:TotalLiabilities>
+  <ind-as:NetCashFlowsFromUsedInOperatingActivities>1200000000.0</ind-as:NetCashFlowsFromUsedInOperatingActivities>
+</xbrli:xbrl>

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+build/
+dist/
+
+# Environment
+.env
+.DS_Store
+
+# Data & Logs
+app/data/*.db
+logs/
+*.log
+mlflow.db
+mlruns/
+
+# Streamlit
+.streamlit/
+
+# Workspace
+.gemini/
+scratch/
