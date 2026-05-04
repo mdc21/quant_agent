@@ -27,7 +27,9 @@ class PortfolioArchitect:
         sector_map: Optional[Dict[str, str]] = None,
         cap_map: Optional[Dict[str, str]] = None,
         sector_limit: float = 0.25,
-        cap_targets: Optional[Dict[str, float]] = None
+        cap_targets: Optional[Dict[str, float]] = None,
+        sector_caps: Optional[Dict[str, float]] = None,
+        sector_floors: Optional[Dict[str, float]] = None,
     ) -> np.ndarray:
         """
         TCM-Penalized Mean-Variance Optimization with UCITS and institutional capital constraints.
@@ -63,13 +65,21 @@ class PortfolioArchitect:
         # 3. Institutional Capital Constraints
         inst_constraints = []
         
-        # A. Sector Hard Ceilings (Capital-Based)
+        # A. Sector Hard Ceilings and Floors (Dynamic Capital-Based)
         if sector_map:
             unique_sectors = set(sector_map.values())
             for sector in unique_sectors:
                 indices = [i for i, s in enumerate(symbols) if sector_map.get(s) == sector]
                 if indices:
-                    inst_constraints.append(cp.sum(w[indices]) <= sector_limit)
+                    # Dynamic Caps
+                    cap = sector_caps.get(sector, sector_limit) if sector_caps else sector_limit
+                    inst_constraints.append(cp.sum(w[indices]) <= cap)
+                    
+                    # Dynamic Floors
+                    if sector_floors:
+                        floor = sector_floors.get(sector, 0.0)
+                        if floor > 0:
+                            inst_constraints.append(cp.sum(w[indices]) >= floor)
         
         # B. Multi-Cap Targets (Capital-Based Ranges)
         if cap_map and cap_targets:
@@ -129,7 +139,8 @@ class PortfolioArchitect:
         sector_map: Optional[Dict[str, str]] = None,
         cap_map: Optional[Dict[str, str]] = None,
         sector_limit: float = 0.25,
-        cap_targets: Optional[Dict[str, float]] = None
+        cap_targets: Optional[Dict[str, float]] = None,
+        **kwargs
     ) -> Tuple[Dict[str, float], str]:
         """
         High-level entry point with support for sector and cap guardrails.
@@ -155,7 +166,9 @@ class PortfolioArchitect:
                 sector_map=sector_map,
                 cap_map=cap_map,
                 sector_limit=sector_limit,
-                cap_targets=cap_targets
+                cap_targets=cap_targets,
+                sector_caps=kwargs.get("sector_caps"),
+                sector_floors=kwargs.get("sector_floors")
             )
             method = "MVO"
         except Exception as e:

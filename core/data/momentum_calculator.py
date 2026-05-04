@@ -27,22 +27,31 @@ class MomentumCalculator:
 
     def _fetch_prices(self, symbols: List[str]) -> pd.DataFrame:
         """
-        Downloads ~13 months of daily closing prices via yfinance (NSE suffix).
+        Fetches ~13 months of daily closing prices via the institutional HistoricalProvider (ArcticDB/Breeze).
         Falls back gracefully per symbol if data is unavailable.
         """
-        # Request extra buffer beyond lookback so we have the full window
-        tickers = [f"{s}.NS" for s in symbols]
         try:
-            raw = yf.download(
-                tickers,
-                period=f"{self.lookback_days + 30}d",
-                interval="1d",
-                progress=False,
-                auto_adjust=True,
-            )["Close"]
+            from core.data.historical_provider import HistoricalProvider
+            provider = HistoricalProvider()
         except Exception as e:
-            logger.warning(f"MomentumCalculator: yfinance download failed ({e}). Returning empty.")
+            logger.error(f"MomentumCalculator: Failed to initialize HistoricalProvider ({e}). Returning empty.")
             return pd.DataFrame()
+            
+        total_days = self.lookback_days + 30 # Request extra buffer
+        price_series = {}
+        
+        for sym in symbols:
+            # get_price_series automatically checks ArcticDB first
+            series = provider.get_price_series(sym, total_days)
+            if not series.empty:
+                price_series[sym] = series
+
+        if not price_series:
+            logger.warning("MomentumCalculator: All price downloads failed via DB/yfinance. Returning empty.")
+            return pd.DataFrame()
+
+        raw = pd.DataFrame(price_series)
+        raw = raw.ffill().dropna()
 
         if isinstance(raw, pd.Series):
             raw = raw.to_frame(name=symbols[0])

@@ -58,6 +58,29 @@ class HistoricalProvider:
                 logger.info(f"Successfully retrieved YFinance price series for {yf_symbol}")
                 series = history['Close']
                 series.index = pd.to_datetime(series.index).tz_localize(None)
+                
+                # HARDENING: Persist the yfinance fallback into ArcticDB so it becomes "local" for future runs
+                try:
+                    from core.data.schema import PITMarketData
+                    pit_records = []
+                    lineage_id = f"FALLBACK_YF_{datetime.datetime.now().strftime('%Y%m%d')}"
+                    for dt, close in series.items():
+                        if pd.isna(close): continue
+                        record = PITMarketData(
+                            symbol=symbol,
+                            data={'close': float(close)},
+                            as_of_date=dt,
+                            lineage_id=lineage_id,
+                            source="yfinance_fallback"
+                        )
+                        pit_records.append(record)
+                    
+                    if pit_records:
+                        self.store.write_records(symbol, pit_records, metadata={'source': 'yfinance', 'harden_sync': True})
+                        logger.info(f"Hardened Sync: Persisted {len(pit_records)} fallback records for {symbol} to local database.")
+                except Exception as e_persist:
+                    logger.warning(f"Harden Sync failed for {symbol}: {e_persist}")
+                    
                 return series
         except Exception as e:
             logger.error(f"YFinance fallback failed for {symbol}: {e}")

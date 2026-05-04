@@ -22,11 +22,14 @@ class IngestionEngine:
         print(f"Fetching historical data for {symbol} from {from_date} to {to_date}...")
         
         # 1. Fetch raw data from Breeze API
+        from core.utils.symbol_mapper import SymbolMapper
+        breeze_code = SymbolMapper.to_breeze(symbol)
+        
         raw_data = self.breeze.get_historical_data_v2(
             interval="1day",
             from_date=from_date,
             to_date=to_date,
-            stock_code=symbol,
+            stock_code=breeze_code,
             exchange_code="NSE",
             product_type="cash"
         )

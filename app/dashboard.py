@@ -25,8 +25,8 @@ load_dotenv()
 
 # --- Global Helpers ---
 def fmt_inr(val):
-    if not val: return "₹ 0"
-    abs_fmt = f"₹ {val:,.0f}"
+    if not val: return "₹ 0.00"
+    abs_fmt = f"₹ {val:,.2f}"
     if val >= 10000000: 
         return f"₹ {val/10000000:.2f} Cr | {abs_fmt}"
     if val >= 100000: 
@@ -347,6 +347,10 @@ if persona == "📈 Investor":
             
             submitted = st.form_submit_button("Initialize Fiduciary Plan")
             if submitted:
+                # UX Reset: Clear old portfolio data so the Portfolio View waits for a new generation signal
+                for key in ['path_equity', 'path_passive', 'allocator_meta']:
+                    st.session_state.pop(key, None)
+                
                 # Prepare goals for persistence
                 user_goals = [
                     {"label": "Survival", "tier": 1, "target_pv": emergency_fund, "horizon": 2, "current_assets": amount * 0.1},
@@ -402,17 +406,31 @@ if persona == "📈 Investor":
                 col_b1, col_b2 = st.columns(2)
                 eq_data = st.session_state.path_equity
                 
-                # Dynamic Sector Breakdown
-                sectors = [c['sector'] for c in eq_data]
-                sector_counts = pd.Series(sectors).value_counts(normalize=True) * 100
-                sector_df = sector_counts.reset_index()
-                sector_df.columns = ["Sector", "Weight (%)"]
+                # Use meta['equity_cap'] to ensure graphs match the exact percentages in the dissection tables
+                meta = st.session_state.allocator_meta
+                equity_cap = meta.get('equity_cap', sum(c.get('target_capital', 0) for c in eq_data))
                 
-                # Dynamic Cap Breakdown
-                caps = [c['cap'] for c in eq_data]
-                cap_counts = pd.Series(caps).value_counts(normalize=True) * 100
-                cap_df = cap_counts.reset_index()
-                cap_df.columns = ["Cap Size", "Weight (%)"]
+                # Corrected Sector Breakdown (Capital-Weighted against Total Equity)
+                sector_weights = {}
+                for c in eq_data:
+                    s = c.get('sector', 'Unknown')
+                    cap = c.get('target_capital', 0)
+                    sector_weights[s] = sector_weights.get(s, 0) + cap
+                sector_df = pd.DataFrame([
+                    {"Sector": s, "Weight (%)": (cap / equity_cap) * 100 if equity_cap > 0 else 0} 
+                    for s, cap in sector_weights.items()
+                ])
+                
+                # Corrected Cap Breakdown (Capital-Weighted against Total Equity)
+                cap_weights = {}
+                for c in eq_data:
+                    cp = c.get('cap', 'Unknown')
+                    cap = c.get('target_capital', 0)
+                    cap_weights[cp] = cap_weights.get(cp, 0) + cap
+                cap_df = pd.DataFrame([
+                    {"Cap Size": cp, "Weight (%)": (cap / equity_cap) * 100 if equity_cap > 0 else 0} 
+                    for cp, cap in cap_weights.items()
+                ])
 
                 with col_b1:
                     st.markdown("#### Sector Allocation")
@@ -420,6 +438,75 @@ if persona == "📈 Investor":
                 with col_b2:
                     st.markdown("#### Market Cap Profile")
                     st.bar_chart(cap_df.set_index("Cap Size"), color="#f43f5e")
+
+                # --- NEW: Fiduciary Capital Audit (Drill-Down) ---
+                with st.expander("🔍 Fiduciary Capital Audit: Rupee-Trace Drill Down", expanded=False):
+                    meta = st.session_state.allocator_meta
+                    total_managed = st.session_state.invested_amount
+                    regime_pct = meta.get('regime_scale', '80%')
+                    defensive_pct = f"{100 - int(regime_pct.replace('%',''))}%" if '%' in regime_pct else "20%"
+                    
+                    trace_data = [
+                        {"Allocation Layer": "1. Total Managed Capital", "Amount": total_managed, "Rationale": "Initial Investment"},
+                        {"Allocation Layer": f"2. ├─ Target Equity ({regime_pct})", "Amount": meta.get('equity_cap', 0), "Rationale": "Macro Regime Risk Tolerance"},
+                        {"Allocation Layer": "3. │  ├─ Alpha Sleeve (Direct Stocks)", "Amount": sum(c['target_capital'] for c in eq_data), "Rationale": "60% of Equity (High Conviction)"},
+                        {"Allocation Layer": "4. │  └─ Beta Sleeve (Equity Funds)", "Amount": meta.get('beta_cap', 0), "Rationale": "40% of Equity (Market Matching)"},
+                        {"Allocation Layer": f"5. └─ Target Defensive ({defensive_pct})", "Amount": meta.get('defensive_cap', 0), "Rationale": "Capital Preservation Assets"},
+                        {"Allocation Layer": "6. Total Actually Deployed", "Amount": sum(c['target_capital'] for c in eq_data) + sum(c.get('target_capital', 0) for c in st.session_state.get('path_passive', [])), "Rationale": "Total Alpha + Beta + Defensive"}
+                    ]
+                    trace_df = pd.DataFrame(trace_data)
+                    trace_df['Amount'] = trace_df['Amount'].apply(lambda x: f"₹ {x:,.2f}")
+                    st.table(trace_df)
+                    
+                    st.markdown("##### 2. Dissection by Category")
+                    d1, d2, d3 = st.columns(3)
+                    with d1:
+                        st.markdown("**By Market Cap**")
+                        cap_audit = []
+                        unique_caps = sorted(list(set(c.get('cap', 'Unknown') for c in eq_data)))
+                        for cp_name in unique_caps:
+                            subset = [c for c in eq_data if c.get('cap') == cp_name]
+                            total = sum(c.get('target_capital', 0) for c in subset)
+                            pct = (total / meta['equity_cap']) * 100 if meta.get('equity_cap', 0) > 0 else 0
+                            tickers = ", ".join([c.get('symbol', '') for c in subset])
+                            cap_audit.append({"Category": cp_name, "Capital": total, "Exposure": f"{pct:.2f}%", "Assets": tickers})
+                        cap_df = pd.DataFrame(cap_audit)
+                        if not cap_df.empty and 'Capital' in cap_df.columns:
+                            cap_df['Capital'] = cap_df['Capital'].apply(lambda x: f"₹ {x:,.2f}")
+                        st.dataframe(cap_df, hide_index=True, use_container_width=True)
+                        
+                    with d2:
+                        st.markdown("**By Sector**")
+                        sector_audit = []
+                        unique_sects = sorted(list(set(c.get('sector', 'Unknown') for c in eq_data)))
+                        for s_name in unique_sects:
+                            subset = [c for c in eq_data if c.get('sector') == s_name]
+                            total = sum(c.get('target_capital', 0) for c in subset)
+                            pct = (total / meta['equity_cap']) * 100 if meta.get('equity_cap', 0) > 0 else 0
+                            sector_audit.append({"Sector": s_name, "Capital": total, "Exposure": f"{pct:.2f}%"})
+                        
+                        sector_df = pd.DataFrame(sector_audit)
+                        if not sector_df.empty and 'Capital' in sector_df.columns:
+                            sector_df['Capital'] = sector_df['Capital'].apply(lambda x: f"₹ {x:,.2f}")
+                        st.dataframe(sector_df, hide_index=True, use_container_width=True)
+                        
+                    with d3:
+                        st.markdown("**By Passive Category**")
+                        pass_audit = []
+                        if hasattr(st.session_state, 'path_passive'):
+                            pass_data = st.session_state.path_passive
+                            unique_cats = sorted(list(set(c.get('category', 'Passive') for c in pass_data)))
+                            total_passive_cap = meta.get('defensive_cap', 0) + meta.get('beta_cap', 0)
+                            for cat in unique_cats:
+                                subset = [c for c in pass_data if c.get('category') == cat]
+                                total = sum(c.get('target_capital', 0) for c in subset)
+                                pct = (total / total_passive_cap) * 100 if total_passive_cap > 0 else 0
+                                tickers = ", ".join([c.get('ticker', '') for c in subset])
+                                pass_audit.append({"Category": cat, "Capital": total, "Exposure": f"{pct:.2f}%", "Assets": tickers})
+                            pass_df = pd.DataFrame(pass_audit)
+                            if not pass_df.empty and 'Capital' in pass_df.columns:
+                                pass_df['Capital'] = pass_df['Capital'].apply(lambda x: f"₹ {x:,.2f}")
+                            st.dataframe(pass_df, hide_index=True, use_container_width=True)
 
             # --- 1. Portfolio Construction Engine ---
             st.markdown("### 🏗️ Path Allocator")
@@ -433,6 +520,36 @@ if persona == "📈 Investor":
                     risk_prof = st.selectbox("Risk Tolerance", ["Aggressive", "Balanced", "Conservative"])
                 with r3:
                     eq_split = st.slider("Alpha-Beta Split (%)", 10, 90, 60)
+                    
+                # --- NEW: Transparency & Customization ---
+                default_macro = {"Aggressive": 80, "Balanced": 60, "Conservative": 40}[risk_prof]
+                default_caps = {"Aggressive": (60, 25, 15), "Balanced": (70, 20, 10), "Conservative": (80, 15, 5)}[risk_prof]
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.info(f"💡 **Fiduciary Defaults for {risk_prof}:** {default_macro}% Equity / {100-default_macro}% Defensive. Equity is split {default_caps[0]}% Large / {default_caps[1]}% Mid / {default_caps[2]}% Small.")
+                
+                customize = st.toggle("⚙️ Customize Allocation Rules")
+                
+                custom_macro = None
+                custom_cap = None
+                
+                if customize:
+                    st.markdown("##### Custom Override Rules")
+                    cust_eq = st.slider("Macro Split: Target Equity (%)", 10, 100, default_macro, help="The remainder will be allocated to Defensive/Capital Preservation assets.")
+                    
+                    st.write("Multi-Cap Equity Distribution (%)")
+                    mc1, mc2, mc3 = st.columns(3)
+                    with mc1: l_cap = st.number_input("Large Cap", 0, 100, default_caps[0])
+                    with mc2: m_cap = st.number_input("Mid Cap", 0, 100, default_caps[1])
+                    with mc3: s_cap = st.number_input("Small Cap", 0, 100, default_caps[2])
+                    
+                    if (l_cap + m_cap + s_cap) != 100:
+                        st.error(f"Cap percentages must sum to 100%. Current sum: {l_cap + m_cap + s_cap}%")
+                        st.stop()
+                    else:
+                        custom_macro = cust_eq / 100.0
+                        custom_cap = (l_cap/100.0, m_cap/100.0, s_cap/100.0)
+                st.markdown("<br>", unsafe_allow_html=True)
                     
                 c1, c2 = st.columns(2)
                 with c1:
@@ -468,7 +585,9 @@ if persona == "📈 Investor":
                             max_funds=max_funds,
                             risk_profile=risk_prof,
                             total_capital=total_cap,
-                            equity_split_percent=eq_split
+                            equity_split_percent=eq_split,
+                            custom_macro_allocation=custom_macro,
+                            custom_cap_ratios=custom_cap
                         )
                         
                         st.session_state.path_equity = allocator.build_equity_sleeve(current_portfolio=current_port_map)
@@ -481,6 +600,7 @@ if persona == "📈 Investor":
                             "defensive_cap": allocator.target_defensive_capital,
                             "alpha_cap": allocator.alpha_capital,
                             "beta_cap": allocator.beta_equity_capital,
+                            "regime_scale": f"{allocator.equity_allocation*100:.0f}%",
                             "optimizer_method": opt_method,
                         }
                         
@@ -568,20 +688,22 @@ if persona == "📈 Investor":
                 st.markdown("#### 🔵 Alpha Sleeve: Direct Equities")
                 df_eq = pd.DataFrame(st.session_state.path_equity)
                 if not df_eq.empty:
-                    # Flatten factors
-                    df_eq['ROCE'] = df_eq['factors'].apply(lambda x: x.get('roce', 0))
+                    # Flatten factors and explicitly round for the UI
+                    df_eq['ROCE'] = df_eq['factors'].apply(lambda x: round(x.get('roce', 0), 4))
                     df_eq['FCF Yrs'] = df_eq['factors'].apply(lambda x: x.get('fcf_positive_years', 0))
-                    df_eq['Momentum'] = df_eq['factors'].apply(lambda x: x.get('momentum', 0.5))
+                    df_eq['Momentum'] = df_eq['factors'].apply(lambda x: round(x.get('momentum', 0.5), 2))
+                    df_eq['target_capital'] = df_eq['target_capital'].round(2)
+                    df_eq['target_weight'] = df_eq['target_weight'].round(4)
                     
                     st.dataframe(
                         df_eq[['symbol', 'sector', 'cap', 'target_weight', 'target_capital', 'conviction', 'ROCE', 'FCF Yrs', 'Momentum']],
                         column_config={
                             "symbol": "Ticker",
                             "target_weight": st.column_config.ProgressColumn("Weight", format="%.2f", min_value=0, max_value=0.15),
-                            "target_capital": st.column_config.NumberColumn("Capital (₹)", format="₹%,.0f"),
-                            "ROCE": st.column_config.NumberColumn("ROCE", format="%.1%"),
+                            "target_capital": st.column_config.NumberColumn("Capital (₹)", format="₹%,.2f"),
+                            "ROCE": st.column_config.NumberColumn("ROCE", format="%.2%"),
                             "FCF Yrs": st.column_config.NumberColumn("FCF (3/4Y)", format="%d"),
-                            "Momentum": st.column_config.ProgressColumn("Momentum", format="%.0%", min_value=0, max_value=1),
+                            "Momentum": st.column_config.ProgressColumn("Momentum", format="%.2f", min_value=0, max_value=1),
                             "conviction": st.column_config.NumberColumn("Conviction", format="%.2f")
                         },
                         hide_index=True,
@@ -595,12 +717,14 @@ if persona == "📈 Investor":
                 st.markdown("#### 🟢 Beta & Defensive Sleeve: Funds")
                 df_pf = pd.DataFrame(st.session_state.path_passive)
                 if not df_pf.empty:
+                    df_pf['target_capital'] = df_pf['target_capital'].round(2)
+                    df_pf['target_weight'] = df_pf['target_weight'].round(4)
                     st.dataframe(
                         df_pf[['ticker', 'category', 'rationale', 'target_weight', 'target_capital', 'expense_ratio', 'conviction']],
                         column_config={
                             "ticker": "Ticker",
                             "target_weight": st.column_config.ProgressColumn("Weight", format="%.2f", min_value=0, max_value=0.20),
-                            "target_capital": st.column_config.NumberColumn("Capital (₹)", format="₹%,.0f"),
+                            "target_capital": st.column_config.NumberColumn("Capital (₹)", format="₹%,.2f"),
                             "expense_ratio": st.column_config.NumberColumn("TER", format="%.2%"),
                             "conviction": st.column_config.NumberColumn("Conviction", format="%.2f")
                         },
@@ -668,12 +792,16 @@ if persona == "📈 Investor":
                             })
                     
                     df_actions = pd.DataFrame(actions)
+                    df_actions['Current Value'] = df_actions['Current Value'].round(2)
+                    df_actions['Target Value'] = df_actions['Target Value'].round(2)
+                    df_actions['Difference'] = df_actions['Difference'].round(2)
+                    
                     st.dataframe(
                         df_actions,
                         column_config={
-                            "Current Value": st.column_config.NumberColumn(format="₹%,.0f"),
-                            "Target Value": st.column_config.NumberColumn(format="₹%,.0f"),
-                            "Difference": st.column_config.NumberColumn(format="₹%,.0f"),
+                            "Current Value": st.column_config.NumberColumn(format="₹%,.2f"),
+                            "Target Value": st.column_config.NumberColumn(format="₹%,.2f"),
+                            "Difference": st.column_config.NumberColumn(format="₹%,.2f"),
                             "Action": st.column_config.TextColumn("Recommendation"),
                             "Tax Harvest": st.column_config.TextColumn("Tax Harvest")
                         },

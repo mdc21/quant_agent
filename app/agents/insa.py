@@ -108,11 +108,11 @@ class InsightNarrativeEngine:
         
         context_summary = f"""
         INVESTMENT CONTEXT:
-        - Total Capital Managed: {total_amount:,.0f} INR
+        - Total Capital Managed: {total_amount:,.2f} INR
         - Risk Profile: {risk_profile}
         - Current Portfolio:
-            * Equities ({len(equity_sleeve)} stocks): {", ".join([f"{s['symbol']} ({s['target_weight']:.1%})" for s in equity_sleeve[:10]])}
-            * Passive ({len(passive_sleeve)} funds): {", ".join([f"{f['ticker']} ({f['target_weight']:.1%})" for f in passive_sleeve])}
+            * Equities ({len(equity_sleeve)} stocks): {", ".join([f"{s['symbol']} ({s['target_weight']:.2%})" for s in equity_sleeve[:10]])}
+            * Passive ({len(passive_sleeve)} funds): {", ".join([f"{f['ticker']} ({f['target_weight']:.2%})" for f in passive_sleeve])}
         - Fiduciary Rules Active: UCITS 5/10/40, 20% Sector Ceiling, ADV-Impact Cost TCM.
         - Core Selection Filter: ROCE > 1.5%, FCF Quality.
         """
@@ -215,7 +215,7 @@ class InsightNarrativeEngine:
             if sectors:
                 top_sector = max(set(sectors), key=sectors.count)
                 sector_weight = (sectors.count(top_sector) / len(sectors)) * 100
-                sector_msg = f"Your highest exposure is currently in **{top_sector}** ({sector_weight:.1f}% of equities), "
+                sector_msg = f"Your highest exposure is currently in **{top_sector}** ({sector_weight:.2f}% of equities), "
             else:
                 sector_msg = ""
                 
@@ -244,7 +244,7 @@ class InsightNarrativeEngine:
         # E. Default Fiduciary Overview
         else:
             response = (
-                f"I have analyzed your **{risk_profile}** portfolio managing **{total_amount:,.0f} INR**. "
+                f"I have analyzed your **{risk_profile}** portfolio managing **{total_amount:,.2f} INR**. "
                 f"The system is operating within all fiduciary guardrails including ROCE and Sector-Cap limits. "
                 "Ask me about specific stocks or your sector risk for more detail."
             )

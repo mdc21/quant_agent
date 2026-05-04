@@ -24,38 +24,73 @@ class PassiveResearchAgent:
         diff = fund_returns - benchmark_returns
         return float(diff.std() * np.sqrt(252))
 
+    def calculate_sharpe(self, fund_returns: pd.Series, risk_free_rate: float = 0.065) -> float:
+        """Calculates Annualized Sharpe Ratio."""
+        if fund_returns.empty: return 0.0
+        annualized_return = fund_returns.mean() * 252
+        annualized_vol = fund_returns.std() * np.sqrt(252)
+        if annualized_vol == 0: return 0.0
+        return float((annualized_return - risk_free_rate) / annualized_vol)
+
+    def calculate_downside_capture(self, fund_returns: pd.Series, benchmark_returns: pd.Series) -> float:
+        """
+        Calculates Downside Capture Ratio.
+        Measures fund's performance when the benchmark is negative.
+        < 1.0 means it fell less than the benchmark (downside protection).
+        """
+        if fund_returns.empty or benchmark_returns.empty: return 1.0
+        down_days = benchmark_returns < 0
+        if not down_days.any(): return 1.0 # No down days in period
+        
+        fund_down = fund_returns[down_days].mean()
+        bench_down = benchmark_returns[down_days].mean()
+        
+        if bench_down >= 0: return 1.0
+        
+        capture = fund_down / bench_down
+        return float(max(0.01, capture)) # Ensure >0 for safe mathematical inversion
+
     def evaluate_vehicles(self, vehicle_data: List[Dict[str, Any]]) -> List[PassiveVehicle]:
         """
-        Screens and ranks passive vehicles based on TE, TER, and Liquidity.
+        Screens and ranks passive vehicles based on the Smart Beta formulation:
+        Sharpe (30%), 1/Downside Capture (20%), 1/TE (20%), 1/TER (15%), Liquidity (15%).
         """
         results = []
         
         for data in vehicle_data:
-            # Stage 1: Liquidity Guardrail
             adv = data.get('adv', 0)
             if adv < self.min_adv:
                 continue # Disqualified
                 
-            # Stage 2: Calculate Tracking Error
+            # Core Metrics
             te = self.calculate_tracking_error(data['returns'], data['benchmark_returns'])
+            sharpe = self.calculate_sharpe(data['returns'])
+            dc = self.calculate_downside_capture(data['returns'], data['benchmark_returns'])
+            ter = data.get('ter', 0.02)
+            liq_score = data.get('liq_score', 0.5)
             
-            # Stage 3: Conviction Scoring (50% TE, 30% TER, 20% Liquidity)
-            # Normalize scores (Lower TE/TER is better)
-            # Assuming TE max 0.05 (5%) and TER max 0.02 (2%) for normalization
-            te_score = max(0, 1 - (te / 0.05))
-            ter_score = max(0, 1 - (data['ter'] / 0.02))
-            liq_score = data.get('liq_score', 0.5) # 0 to 1 scale
+            # Mathematical Safety Guards for Inverses
+            safe_dc = max(0.1, dc)      # Prevent infinity if capture is 0
+            safe_te = max(0.005, te)    # Prevent infinity if perfect tracker
+            safe_ter = max(0.001, ter)  # Prevent infinity if fee is 0
             
-            conviction = (0.5 * te_score) + (0.3 * ter_score) + (0.2 * liq_score)
+            # Smart Beta Formula Evaluation
+            raw_score = (
+                (sharpe * 0.30) + 
+                ((1.0 / safe_dc) * 0.20) + 
+                ((1.0 / safe_te) * 0.20) + 
+                ((1.0 / safe_ter) * 0.15) + 
+                (liq_score * 0.15)
+            )
             
             results.append(PassiveVehicle(
                 ticker=data['ticker'],
                 category=data['category'],
                 tracking_error=te,
-                expense_ratio=data['ter'],
+                expense_ratio=ter,
                 liquidity_score=liq_score,
-                conviction_score=conviction,
-                rationale=f"TE: {te:.2%}, TER: {data['ter']:.2%}, Liquidity: {liq_score:.2f}"
+                conviction_score=raw_score,
+                rationale=f"SmartBeta (Sharpe: {sharpe:.2f}, DC: {dc:.2f}, TE: {te:.2%})"
             ))
             
         # Sort by conviction
@@ -66,19 +101,41 @@ class PassiveResearchAgent:
         Orchestrates live data fetching for Mutual Funds and calculates live Tracking Error.
         """
         from core.data.mfapi_client import MFApiClient
-        from core.data.historical_provider import HistoricalProvider
         import datetime
         
         if scheme_codes is None:
-            # 120586: ICICI Pru Midcap
-            # 103504: SBI Nifty Index Fund
+            self.logger.info("Dynamic AMFI Scan requested. Fetching top Direct-Growth funds...")
+            try:
+                import requests
+                # Use MFAPI master list instead of AMFI to bypass geoblocks
+                res = requests.get("https://api.mfapi.in/mf", timeout=15)
+                if res.status_code == 200:
+                    data = res.json()
+                    candidates = []
+                    # Filter for 'Direct Plan' and 'Growth', excluding 'Dividend' and 'IDCW'
+                    for fund in data:
+                        name = str(fund.get('schemeName', '')).lower()
+                        if "direct" in name and "growth" in name and "idcw" not in name and "dividend" not in name:
+                            # Prioritize Index, Midcap, Smallcap, and Thematic for our Smart Beta sleeve
+                            if any(x in name for x in ["index", "midcap", "smallcap", "technology", "nifty"]):
+                                candidates.append(str(fund.get('schemeCode')))
+                    # Sample 15 candidates deterministically for stable fiduciary generation
+                    import random
+                    random.seed(42)
+                    scheme_codes = random.sample(candidates, min(15, len(candidates)))
+                    self.logger.info(f"MFAPI Scan complete. Evaluated {len(candidates)} valid funds. Selected {len(scheme_codes)} for live NAV screening.")
+            except Exception as e:
+                self.logger.warning(f"Dynamic scan failed ({e}). Falling back to hardcoded safety net.")
+                scheme_codes = ["120586", "103504", "147701", "120594"]
+                
+        if not scheme_codes:
             scheme_codes = ["120586", "103504"]
             
         mf_client = MFApiClient()
-        hp = HistoricalProvider()
-        
-        self.logger.info("Fetching live NIFTY Benchmark returns...")
         try:
+            from core.data.historical_provider import HistoricalProvider
+            hp = HistoricalProvider()
+            self.logger.info("Fetching live NIFTY Benchmark returns...")
             # We try to fetch NIFTY. ICICI Breeze uses "NIFTY" for the index.
             nifty_prices = hp.get_price_series("NIFTY", lookback_days=180)
             if not nifty_prices.empty:
@@ -86,7 +143,7 @@ class PassiveResearchAgent:
             else:
                 nifty_returns = pd.Series()
         except Exception as e:
-            self.logger.warning(f"Failed to fetch NIFTY from Breeze ({e}). Mocking benchmark...")
+            self.logger.warning(f"Failed to fetch NIFTY from HistoricalProvider ({e}). Mocking benchmark...")
             nifty_returns = pd.Series()
 
         # If NIFTY fetch fails, we use yfinance as a robust fallback

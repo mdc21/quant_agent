@@ -29,6 +29,8 @@ class PathAllocator:
         risk_profile: str = "Aggressive",
         total_capital: float = 1_000_000,
         equity_split_percent: int = 60,
+        custom_macro_allocation: Optional[float] = None,
+        custom_cap_ratios: Optional[Tuple[float, float, float]] = None,
     ):
         self.max_stocks = max_stocks
         self.max_funds = max_funds
@@ -37,8 +39,12 @@ class PathAllocator:
         self.equity_split_percent = equity_split_percent / 100.0
 
         # --- Macro Allocation ---
-        equity_pct = {"Aggressive": 0.80, "Balanced": 0.60, "Conservative": 0.40}
-        self.equity_allocation = equity_pct.get(risk_profile, 0.60)
+        if custom_macro_allocation is not None:
+            self.equity_allocation = custom_macro_allocation
+        else:
+            equity_pct = {"Aggressive": 0.80, "Balanced": 0.60, "Conservative": 0.40}
+            self.equity_allocation = equity_pct.get(risk_profile, 0.60)
+            
         self.non_equity_allocation = 1.0 - self.equity_allocation
 
         self.target_equity_capital = self.total_capital * self.equity_allocation
@@ -51,12 +57,15 @@ class PathAllocator:
         self._base_return = {"Aggressive": 0.15, "Balanced": 0.11, "Conservative": 0.08}[risk_profile]
 
         # --- Multi-Cap Sieve Targets (Large:Mid:Small) ---
-        cap_ratios = {
-            "Aggressive": (0.60, 0.25, 0.15),
-            "Balanced": (0.70, 0.20, 0.10),
-            "Conservative": (0.80, 0.15, 0.05)
-        }
-        self.large_pct, self.mid_pct, self.small_pct = cap_ratios.get(risk_profile, (0.70, 0.20, 0.10))
+        if custom_cap_ratios is not None:
+            self.large_pct, self.mid_pct, self.small_pct = custom_cap_ratios
+        else:
+            cap_ratios = {
+                "Aggressive": (0.60, 0.25, 0.15),
+                "Balanced": (0.70, 0.20, 0.10),
+                "Conservative": (0.80, 0.15, 0.05)
+            }
+            self.large_pct, self.mid_pct, self.small_pct = cap_ratios.get(risk_profile, (0.70, 0.20, 0.10))
 
         self.eqra = EquityResearchAgent()
         self.pfra = PassiveResearchAgent()
@@ -87,35 +96,42 @@ class PathAllocator:
 
     def _fetch_price_history(self, symbols: List[str], days: int = 180) -> pd.DataFrame:
         """
-        Step 1: Download 180-day daily closing prices for each symbol.
-        Returns a DataFrame of DAILY RETURNS (T × N), dropping symbols
-        with insufficient history.
+        Step 1: Download 180-day daily closing prices for each symbol via the institutional ArcticDB pipeline.
+        Returns a DataFrame of DAILY RETURNS (T × N), dropping symbols with insufficient history.
         """
-        print(f"PathAllocator: Fetching {days}-day price history for {len(symbols)} symbols...")
-        tickers = [f"{s}.NS" for s in symbols]
+        print(f"PathAllocator: Fetching {days}-day price history for {len(symbols)} symbols from Local Database...")
+        
         try:
-            raw = yf.download(
-                tickers,
-                period=f"{days}d",
-                interval="1d",
-                progress=False,
-                auto_adjust=True,
-            )["Close"]
+            from core.data.historical_provider import HistoricalProvider
+            # Instantiate without breeze token; it will pull from ArcticDB or fallback to yfinance internally
+            provider = HistoricalProvider()
+            
+            price_series = {}
+            for sym in symbols:
+                # get_price_series automatically checks ArcticDB first
+                series = provider.get_price_series(sym, days)
+                if not series.empty:
+                    price_series[sym] = series
         except Exception as e:
-            print(f"PathAllocator: Price download failed ({e}). Falling back to identity covariance.")
+            print(f"PathAllocator: Database/HistoricalProvider connection failed ({e}). Falling back to identity.")
             return pd.DataFrame()
 
-        if isinstance(raw, pd.Series):
-            raw = raw.to_frame(name=symbols[0])
+        if not price_series:
+            print(f"PathAllocator: All price downloads failed. Falling back to identity covariance.")
+            return pd.DataFrame()
 
-        # Rename columns back to plain symbols
-        raw.columns = [c.replace(".NS", "") for c in raw.columns]
+        raw = pd.DataFrame(price_series)
+        raw = raw.ffill().dropna()
 
         # Drop columns with > 20% missing data
         threshold = int(days * 0.8)
         raw = raw.dropna(axis=1, thresh=threshold)
+        
+        if raw.empty:
+            return pd.DataFrame()
+            
         returns = raw.pct_change().dropna()
-        print(f"PathAllocator: Price history ready — {len(returns)} days, {len(returns.columns)} symbols.")
+        print(f"PathAllocator: DB Price history ready — {len(returns)} days, {len(returns.columns)} symbols.")
         return returns
 
     def _build_expected_returns(
@@ -241,6 +257,33 @@ class PathAllocator:
             for i, sym in enumerate(symbols):
                 curr_w[i] = current_portfolio.get(sym, 0.0)
 
+        # --- DYNAMIC SECTOR VOLATILITY (BETA) OVERLAYS ---
+        sector_caps = {}
+        sector_floors = {}
+        if not returns_df.empty:
+            market_returns = returns_df.mean(axis=1)
+            market_var = market_returns.var() * 252 # Proxy for market var
+            if market_var > 0:
+                sector_betas = {}
+                unique_sectors = set(sector_map.values())
+                for sect in unique_sectors:
+                    sect_syms = [s for s in symbols if sector_map.get(s) == sect and s in returns_df.columns]
+                    if sect_syms:
+                        sect_returns = returns_df[sect_syms].mean(axis=1)
+                        cov = np.cov(sect_returns, market_returns)[0, 1] * 252
+                        beta = cov / market_var
+                        sector_betas[sect] = beta
+                
+                for sect, beta in sector_betas.items():
+                    if beta > 1.2:
+                        # High Volatility: Suppress Cap to 12%
+                        sector_caps[sect] = 0.12
+                        print(f"PathAllocator [Risk Overlay]: {sect} flagged as HIGH VOLATILITY (Beta={beta:.2f}). Capping at 12%.")
+                    elif beta < 0.8:
+                        # Low Volatility: Anchor Floor to 5%
+                        sector_floors[sect] = 0.05
+                        print(f"PathAllocator [Risk Overlay]: {sect} flagged as LOW VOLATILITY (Beta={beta:.2f}). Anchoring floor at 5%.")
+
         print(f"PathAllocator: Optimizing {len(symbols)} stocks for {self.risk_profile} (60:25:15 Capital Mandate)...")
         weight_dict, method = self.genpoa.optimize_sleeve(
             symbols, 
@@ -252,7 +295,9 @@ class PathAllocator:
             sector_map=sector_map,
             cap_map=cap_map,
             sector_limit=sector_limit,
-            cap_targets=cap_targets
+            cap_targets=cap_targets,
+            sector_caps=sector_caps,
+            sector_floors=sector_floors
         )
         
         # Hydrate the final selection
@@ -274,8 +319,8 @@ class PathAllocator:
         Defensive funds use equal weight within target_defensive_capital.
         """
         print("PathAllocator: Fetching Passive Funds via PFRA...")
-        scheme_codes = ["120586", "103504", "147701", "120594"]
-        equity_funds = self.pfra.screen_funds(scheme_codes)[: self.max_funds]
+        # Pass None to trigger the dynamic AMFI Smart-Beta scan
+        equity_funds = self.pfra.screen_funds(None)[: self.max_funds]
         defensive_funds = self.pfra.screen_defensive_funds()
 
         selected: List[Dict[str, Any]] = []
