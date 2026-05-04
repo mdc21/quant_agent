@@ -18,7 +18,7 @@ class PathAllocator:
       2. Fetch 180-day price history → Ledoit-Wolf covariance
       3. Map EQRA conviction scores → Black-Litterman expected returns
       4. Call GENPOA (MVO / HRP fallback) to produce optimal weights
-      5. Apply 70:20:10 multi-cap and 25% sector caps as hard constraints
+      5. Apply dynamic multi-cap (60/70/80) and risk-based sector caps (15-25%)
       6. Screen passive funds via PFRA and allocate defensive capital equally
     """
 
@@ -198,102 +198,74 @@ class PathAllocator:
                 "cap": cap,
             })
 
-        # Apply risk-based multi-cap constraint and 25% sector cap
-        target_large = max(1, int(self.max_stocks * self.large_pct))
-        target_mid   = max(1, int(self.max_stocks * self.mid_pct))
-        target_small = max(1, int(self.max_stocks * self.small_pct))
-        while target_large + target_mid + target_small > self.max_stocks:
-            target_large -= 1
-        while target_large + target_mid + target_small < self.max_stocks:
-            target_large += 1
-
-        # --- Dynamic Sector Guardrails ---
-        sector_momentum = {}
-        for c in hydrated:
-            s = c["sector"]
-            if s not in sector_momentum: sector_momentum[s] = []
-            sector_momentum[s].append(c.get("factors", {}).get("momentum", 0.5))
+        # Apply risk-based sector limit (Hard Ceiling)
+        sector_cap_pct = {"Aggressive": 0.25, "Balanced": 0.20, "Conservative": 0.15}
+        sector_limit = sector_cap_pct.get(self.risk_profile, 0.20)
         
-        avg_sector_mom = {s: np.mean(m) for s, m in sector_momentum.items()}
+        # Multi-Cap Strict Targets (Capital Weights)
+        cap_targets = {
+            "Large Cap": self.large_pct,
+            "Mid Cap": self.mid_pct,
+            "Small Cap": self.small_pct
+        }
+
+        # --- SELECTION PHASE (Target-Count Sieve) ---
+        # Calculate how many stocks from each category we need to reach max_stocks
+        # while roughly matching the capital distribution.
+        n_large = max(1, int(self.max_stocks * self.large_pct))
+        n_mid   = max(1, int(self.max_stocks * self.mid_pct))
+        n_small = max(1, self.max_stocks - n_large - n_mid)
         
-        counts = {"Large Cap": 0, "Mid Cap": 0, "Small Cap": 0}
-        targets = {"Large Cap": target_large, "Mid Cap": target_mid, "Small Cap": target_small}
-        sector_counts: Dict[str, int] = {}
-        selected: List[Dict[str, Any]] = []
-
-        for c in hydrated:
-            if len(selected) >= self.max_stocks:
-                break
-            cap, sector = c["cap"], c["sector"]
-            
-            # Base cap is 15% of max stocks (Consistently Diversified)
-            # Healthy Ceiling is 20% (Institutional Standard)
-            base_sector_cap = max(1, int(self.max_stocks * 0.15))
-            
-            # Adjust based on sector momentum, but capped at 20% absolute
-            mom = avg_sector_mom.get(sector, 0.5)
-            if mom > 0.7: 
-                adjusted_cap = max(1, int(self.max_stocks * 0.20)) # Hard Ceiling at 20%
-            elif mom < 0.3: 
-                adjusted_cap = max(1, int(self.max_stocks * 0.10)) # Defensive Floor at 10%
-            else: 
-                adjusted_cap = base_sector_cap
-            
-            if counts.get(cap, 0) < targets.get(cap, 0):
-                if sector_counts.get(sector, 0) < adjusted_cap:
-                    selected.append(c)
-                    counts[cap] = counts.get(cap, 0) + 1
-                    sector_counts[sector] = sector_counts.get(sector, 0) + 1
-
-        if not selected:
+        pool_large = [c for c in hydrated if c["cap"] == "Large Cap"][:n_large]
+        pool_mid   = [c for c in hydrated if c["cap"] == "Mid Cap"][:n_mid]
+        pool_small = [c for c in hydrated if c["cap"] == "Small Cap"][:n_small]
+        
+        selected_pool = pool_large + pool_mid + pool_small
+        
+        if not selected_pool:
             return []
 
-        symbols = [s["symbol"] for s in selected]
-        conviction_map = {s["symbol"]: s["conviction"] for s in selected}
-        
-        # Extract ADV data from factors if available
-        adv_data = {s["symbol"]: s.get("factors", {}).get("adv", 1e9) for s in selected}
+        symbols = [s["symbol"] for s in selected_pool]
+        conviction_map = {s["symbol"]: s["conviction"] for s in selected_pool}
+        sector_map = {s["symbol"]: s["sector"] for s in selected_pool}
+        cap_map = {s["symbol"]: s["cap"] for s in selected_pool}
+        adv_data = {s["symbol"]: s.get("factors", {}).get("adv", 1e9) for s in selected_pool}
 
-        # --- Step 1: Price history ---
+        # --- OPTIMIZATION PHASE (Capital-Weight Constraints) ---
         returns_df = self._fetch_price_history(symbols)
-
-        # --- Step 2: Expected returns from EQRA conviction ---
         expected_returns = self._build_expected_returns(symbols, conviction_map)
-
-        # --- Step 3: Ledoit-Wolf covariance ---
         cov_matrix = self._build_covariance(returns_df, symbols)
 
-        # --- Step 4: Rebalancing Weights ---
-        # Map current_portfolio to the symbols list
         curr_w = np.zeros(len(symbols))
         if current_portfolio:
             for i, sym in enumerate(symbols):
                 curr_w[i] = current_portfolio.get(sym, 0.0)
 
-        # --- Step 5: GENPOA optimization (MVO → HRP fallback) ---
-        print("PathAllocator: Calling GENPOA with Dynamic TCM...")
+        print(f"PathAllocator: Optimizing {len(symbols)} stocks for {self.risk_profile} (60:25:15 Capital Mandate)...")
         weight_dict, method = self.genpoa.optimize_sleeve(
             symbols, 
             expected_returns, 
             cov_matrix, 
             current_weights=curr_w,
             adv_data=adv_data,
-            total_capital=self.alpha_capital
+            total_capital=self.alpha_capital,
+            sector_map=sector_map,
+            cap_map=cap_map,
+            sector_limit=sector_limit,
+            cap_targets=cap_targets
         )
-        print(f"PathAllocator: Optimization complete via [{method}].")
+        
+        # Hydrate the final selection
+        final_selected = []
+        for s in selected_pool:
+            sym = s["symbol"]
+            weight = weight_dict.get(sym, 0.0)
+            s["target_weight"] = weight
+            s["target_capital"] = self.alpha_capital * weight
+            s["optimizer"] = method
+            final_selected.append(s)
 
-        # Assign final capital and weights
-        # weight_dict values are fractions of the equity sleeve (sum to 1)
-        total_sleeve_weight = sum(weight_dict.values())
-        for c in selected:
-            sleeve_frac = weight_dict.get(c["symbol"], 1.0 / len(selected))
-            if total_sleeve_weight > 0:
-                sleeve_frac /= total_sleeve_weight  # Re-normalise to 1.0
-            c["target_capital"] = self.alpha_capital * sleeve_frac
-            c["target_weight"] = c["target_capital"] / self.total_capital
-            c["optimizer"] = method
-
-        return selected
+        return final_selected
 
     def build_passive_sleeve(self) -> List[Dict[str, Any]]:
         """
