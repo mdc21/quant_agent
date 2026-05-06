@@ -103,16 +103,40 @@ class InsightNarrativeEngine:
         # 1. Build context from manifest
         equity_sleeve = manifest.get('equity_sleeve', [])
         passive_sleeve = manifest.get('passive_sleeve', [])
+        investor_portfolio = manifest.get('investor_portfolio', [])
+        rebalance_actions = manifest.get('rebalance_actions', [])
         risk_profile = manifest.get('risk_profile', 'Moderate')
         total_amount = manifest.get('amount', 0)
         
+        # Summarize Investor Portfolio
+        inv_summary = "No existing portfolio uploaded."
+        if investor_portfolio:
+            inv_top = ", ".join([f"{item.get('Symbol', 'Unknown')} ({item.get('market_value', 0):,.0f} INR)" for item in investor_portfolio[:8]])
+            inv_summary = f"{len(investor_portfolio)} stocks including: {inv_top}"
+
+        # Summarize Rebalance Actions
+        action_summary = "No rebalance actions required."
+        if rebalance_actions:
+            exits = [a['asset'] for a in rebalance_actions if a['action'] == "EXIT"]
+            buys = [a['asset'] for a in rebalance_actions if a['action'] == "NEW BUY"]
+            trims = [a['asset'] for a in rebalance_actions if a['action'] == "TRIM"]
+            action_summary = f"EXITS: {', '.join(exits[:5])} | NEW BUYS: {', '.join(buys[:5])} | TRIMS: {', '.join(trims[:5])}"
+
         context_summary = f"""
         INVESTMENT CONTEXT:
         - Total Capital Managed: {total_amount:,.2f} INR
         - Risk Profile: {risk_profile}
-        - Current Portfolio:
+        
+        - [EXISTING] INVESTOR PORTFOLIO:
+            * {inv_summary}
+            
+        - [PROPOSED] FIDUCIARY PORTFOLIO:
             * Equities ({len(equity_sleeve)} stocks): {", ".join([f"{s['symbol']} ({s['target_weight']:.2%})" for s in equity_sleeve[:10]])}
             * Passive ({len(passive_sleeve)} funds): {", ".join([f"{f['ticker']} ({f['target_weight']:.2%})" for f in passive_sleeve])}
+        
+        - [RECOMMENDED ACTIONS] REBALANCE PLAN:
+            * {action_summary}
+
         - Fiduciary Rules Active: UCITS 5/10/40, 20% Sector Ceiling, ADV-Impact Cost TCM.
         - Core Selection Filter: ROCE > 1.5%, FCF Quality.
         """
@@ -126,10 +150,12 @@ class InsightNarrativeEngine:
 
         GUIDELINES:
         1. Always refer to our 'fiduciary duty' and 'transparency'.
-        2. If asked about stock selection, mention ROCE, FCF, or UCITS compliance.
-        3. If asked about rebalancing, explain that we avoid illiquidity using ADV-impact costs.
-        4. Be professional, concise, and never apologize for being 'just an AI'. 
-        5. Use the specific portfolio data provided above.
+        2. When asked about rebalancing or exits, refer to the [RECOMMENDED ACTIONS] specifically. 
+        3. Explain WHY we are moving away from certain existing stocks (e.g., low ROCE, high sector risk, or delisted/bankrupt status).
+        4. If asked about stock selection, mention ROCE, FCF, or UCITS compliance.
+        5. If asked about rebalancing, explain that we avoid illiquidity using ADV-impact costs.
+        6. Be professional, concise, and never apologize for being 'just an AI'. 
+        7. Use the specific portfolio data provided above to give concrete examples.
         """
 
         # --- 0. Primary: OpenAI (REST) ---

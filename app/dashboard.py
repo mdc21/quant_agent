@@ -910,34 +910,43 @@ if persona == "📈 Investor":
                             regime = "BULL" if nifty.iloc[-1] > nifty.mean() else "BEAR"
                         except: pass
                         
+                        rebalance_actions = []
                         trade_count = 0
                         total_sell_val = 0
+                        
                         if current_port_map:
                             total_inv_amount = st.session_state.invested_amount
                             target_map = {s['symbol']: s['target_capital'] for s in st.session_state.path_equity}
                             
-                            # Count Exits and Trims
+                            # 1. Process Legacy Holdings (Exits and Trims)
                             for sym, weight in current_port_map.items():
                                 curr_val = weight * total_inv_amount
                                 target_val = target_map.get(sym, 0)
+                                diff = target_val - curr_val
                                 
+                                action = "HOLD"
                                 if target_val == 0: 
+                                    action = "EXIT"
                                     trade_count += 1
                                     total_sell_val += curr_val
-                                else:
-                                    diff = target_val - curr_val
-                                    if abs(diff) > (0.1 * curr_val): 
-                                        trade_count += 1
-                                        if diff < 0: # This is a TRIM (Sell)
-                                            total_sell_val += abs(diff)
+                                elif abs(diff) > (0.1 * curr_val):
+                                    action = "TRIM" if diff < 0 else "TOP-UP"
+                                    trade_count += 1
+                                    if diff < 0: total_sell_val += abs(diff)
+                                
+                                if action != "HOLD":
+                                    rebalance_actions.append({"asset": sym, "action": action, "amount": diff})
                                     
-                            # Count New Buys
+                            # 2. Process New Buys
                             existing_syms = set(current_port_map.keys())
                             for s in st.session_state.path_equity:
                                 if s['symbol'] not in existing_syms:
                                     trade_count += 1
+                                    rebalance_actions.append({"asset": s['symbol'], "action": "NEW BUY", "amount": s['target_capital']})
                         else:
                             trade_count = len(st.session_state.path_equity) + (len(st.session_state.path_passive) if hasattr(st.session_state, 'path_passive') else 0)
+                            for s in st.session_state.path_equity:
+                                rebalance_actions.append({"asset": s['symbol'], "action": "NEW BUY", "amount": s['target_capital']})
 
                         # --- 🔗 SEALING THE MANIFEST (Layer 4 Governance) ---
                         try:
@@ -951,7 +960,9 @@ if persona == "📈 Investor":
                                 "trade_count": trade_count,
                                 "total_sell_value": total_sell_val,
                                 "equity_sleeve": st.session_state.path_equity,
-                                "passive_sleeve": st.session_state.path_passive
+                                "passive_sleeve": st.session_state.path_passive,
+                                "rebalance_actions": rebalance_actions,
+                                "investor_portfolio": st.session_state.get('imported_portfolio').to_dict('records') if st.session_state.get('imported_portfolio') is not None else []
                             }
                             gov.seal_decision(manifest)
                             
