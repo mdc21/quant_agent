@@ -16,7 +16,10 @@ class TaxOptimizationAgent:
     def categorize_lot(self, lot: TaxLot) -> str:
         """
         Determines if a lot is STCG or LTCG (Indian rules: 365 days).
+        If buy_date is missing, assumes STCG (conservative).
         """
+        if not lot.buy_date:
+            return "STCG"
         today = datetime.datetime.now()
         is_long_term = (today - lot.buy_date).days > 365
         return "LTCG" if is_long_term else "STCG"

@@ -56,6 +56,7 @@ class PassiveVehicle(BaseModel):
     Structured passive fund recommendation from PFRA (Task A4).
     """
     ticker: str
+    name: Optional[str] = None
     category: str       # e.g., "Large Cap", "International"
     tracking_error: float
     expense_ratio: float
@@ -97,7 +98,7 @@ class TaxLot(BaseModel):
     Represents a specific batch of shares for tax accounting (Task A8).
     """
     symbol: str
-    buy_date: datetime.datetime
+    buy_date: Optional[datetime.datetime] = None
     buy_price: float
     quantity: int
     current_price: float

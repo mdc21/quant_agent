@@ -23,6 +23,50 @@ from app.agents.insa import InsightNarrativeEngine
 # Load environment variables
 load_dotenv()
 
+# ─────────────────────────────────────────────────────────────────
+# 🔐 AUTHENTICATION & ROUTING GATE
+# All traffic flows through here before reaching the main dashboard
+# ─────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="YourBestPath — Fiduciary Wealth Engine",
+    page_icon="🧭",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Step 1: Check authentication
+from app.auth import render_auth_page
+if not st.session_state.get("authenticated"):
+    render_auth_page()
+    st.stop()
+
+# Step 2: Route to correct page
+app_page = st.session_state.get("app_page", "home")
+
+if app_page == "home":
+    from app.pages.home import render_home
+    render_home()
+    st.stop()
+
+elif app_page == "goals_wizard":
+    from app.pages.goals_wizard import render_goals_wizard
+    render_goals_wizard()
+    st.stop()
+
+elif app_page == "goals_review":
+    # Reuse wizard in edit mode
+    st.session_state.wizard_step = st.session_state.get("wizard_step", 2)
+    from app.pages.goals_wizard import render_goals_wizard
+    render_goals_wizard()
+    st.stop()
+
+elif app_page == "quick_advice":
+    from app.pages.quick_advice import render_quick_advice
+    render_quick_advice()
+    st.stop()
+
+# app_page == "dashboard" → falls through to the existing dashboard code below
+
 # --- Global Helpers ---
 def fmt_inr(val):
     if not val: return "₹ 0.00"
@@ -33,13 +77,9 @@ def fmt_inr(val):
         return f"₹ {val/100000:.2f} L | {abs_fmt}"
     return abs_fmt
 
-# --- Page Config & Styling ---
-st.set_page_config(
-    page_title="YourBestPath",
-    page_icon="⚖️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+
+# --- Page Config & Styling (set_page_config is handled at the top routing gate) ---
+
 
 # Custom CSS for Premium Aesthetics
 st.markdown("""
@@ -244,6 +284,10 @@ if 'chat_history' not in st.session_state:
 
 # --- Sidebar ---
 with st.sidebar:
+    if st.button("← Back to Home", key="btn_return_home", use_container_width=True):
+        st.session_state.app_page = "home"
+        st.rerun()
+
     st.markdown("<h2 style='color:#6366f1; margin-bottom:0;'>YourBestPath Engine</h2>", unsafe_allow_html=True)
     st.markdown("<p style='color:#64748b; font-size:0.8rem;'>Institutional Governance & Oversight</p>", unsafe_allow_html=True)
     st.divider()

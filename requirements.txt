@@ -43,3 +43,5 @@ yfinance>=0.2.0               # Secondary/Backup price feeds
 breeze-connect>=1.0.38        # ICICIDIRECT API
 alpha_vantage>=2.3.0          # Global data backup
 # mfapi-client                # (Conceptual) Custom wrapper for mfapi.in
+streamlit-authenticator>=0.3.3
+cryptography>=42.0.0

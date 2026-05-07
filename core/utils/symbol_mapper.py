@@ -1,4 +1,5 @@
 from typing import Dict
+from functools import lru_cache
 
 class SymbolMapper:
     """
@@ -368,12 +369,14 @@ class SymbolMapper:
     })
 
     @classmethod
+    @lru_cache(maxsize=1024)
     def is_zero_value(cls, symbol: str) -> bool:
         """Returns True for bankrupt/delisted instruments whose market value is ₹0."""
         nse = cls.to_nse(symbol.strip().lstrip('$'))
         return nse in cls._KNOWN_ZERO_VALUE
 
     @classmethod
+    @lru_cache(maxsize=1024)
     def is_resolvable(cls, symbol: str) -> bool:
         """Returns False for instruments with no Yahoo data (but still economically live).
         Note: zero-value instruments ARE 'resolvable' — we just resolve them to ₹0."""
@@ -381,6 +384,7 @@ class SymbolMapper:
         return nse not in cls._KNOWN_UNRESOLVABLE and nse not in cls._KNOWN_ZERO_VALUE
 
     @classmethod
+    @lru_cache(maxsize=1024)
     def to_yahoo(cls, symbol: str) -> str:
         """Converts NSE Symbol or Breeze Code to a valid Yahoo Ticker (without .NS)."""
         # First, ensure we have the standard NSE Ticker
@@ -389,6 +393,7 @@ class SymbolMapper:
         return cls._NSE_TO_YAHOO.get(nse, nse)
 
     @classmethod
+    @lru_cache(maxsize=1024)
     def to_breeze(cls, nse_symbol: str) -> str:
         """Converts NSE Symbol to Breeze Stock Code."""
         # Check explicit mapping first
@@ -404,9 +409,32 @@ class SymbolMapper:
         return nse_symbol
 
     @classmethod
+    @lru_cache(maxsize=1024)
     def to_nse(cls, breeze_code: str) -> str:
         """Converts Breeze Stock Code back to NSE Symbol (Reverse lookup)."""
         for nse, breeze in cls._NSE_TO_BREEZE.items():
             if breeze == breeze_code:
                 return nse
         return breeze_code
+
+    @classmethod
+    @lru_cache(maxsize=1024)
+    def get_sector(cls, symbol: str) -> str:
+        """Returns the industry sector for a given symbol."""
+        # Normalize to NSE ticker
+        nse = cls.to_nse(symbol)
+        
+        # Simple mapping for common symbols, fallback to 'Others'
+        _SECTORS = {
+            "RELIANCE": "Energy",
+            "TCS": "IT", "INFY": "IT", "WIPRO": "IT", "HCLTECH": "IT", "TECHM": "IT",
+            "HDFCBANK": "Banking", "ICICIBANK": "Banking", "SBIN": "Banking", "AXISBANK": "Banking", "KOTAKBANK": "Banking",
+            "HINDUNILVR": "FMCG", "ITC": "FMCG", "NESTLEIND": "FMCG", "TATACONSUM": "FMCG",
+            "MARUTI": "Auto", "TATAMOTORS": "Auto", "M&M": "Auto", "BAJAJ-AUTO": "Auto", "EICHERMOT": "Auto",
+            "SUNPHARMA": "Healthcare", "DRREDDY": "Healthcare", "CIPLA": "Healthcare", "APOLLOHOSP": "Healthcare",
+            "L&T": "Construction", "ULTRACEMCO": "Materials", "GRASIM": "Materials",
+            "BHARTIARTL": "Telecom",
+            "ADANIPORTS": "Infrastructure", "ADANIENT": "Infrastructure",
+            "NTPC": "Utilities", "POWERGRID": "Utilities", "COALINDIA": "Utilities"
+        }
+        return _SECTORS.get(nse, "Others")

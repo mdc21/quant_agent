@@ -4,17 +4,14 @@ from typing import List, Optional, Dict, Any
 import datetime
 from .schema import PITMarketData
 
-_ARCTIC_INSTANCE = None
+from core.data.db import get_arctic
 
 class DataStore:
     """
     ArcticDB-based Time-Series Store with PIT (Point-In-Time) support.
     """
     def __init__(self, uri: str = "lmdb://./data/arctic"):
-        global _ARCTIC_INSTANCE
-        if _ARCTIC_INSTANCE is None:
-            _ARCTIC_INSTANCE = Arctic(uri)
-        self.arctic = _ARCTIC_INSTANCE
+        self.arctic = get_arctic(uri)
         
         if "market_data" not in self.arctic.list_libraries():
             self.arctic.create_library("market_data")
@@ -22,10 +19,13 @@ class DataStore:
             self.arctic.create_library("audit_log")
         if "user_goals" not in self.arctic.list_libraries():
             self.arctic.create_library("user_goals")
+        if "user_portfolios" not in self.arctic.list_libraries():
+            self.arctic.create_library("user_portfolios")
             
         self.lib = self.arctic.get_library("market_data")
         self.audit_lib = self.arctic.get_library("audit_log")
         self.goals_lib = self.arctic.get_library("user_goals")
+        self.portfolio_lib = self.arctic.get_library("user_portfolios")
 
     def log_quality_event(self, event_type: str, details: Dict[str, Any], lineage_id: str):
         """
@@ -120,4 +120,32 @@ class DataStore:
             "goals": version.data.to_dict('records'),
             "risk_tolerance": version.metadata.get("risk_tolerance", "Moderate"),
             "inflation_rate": version.metadata.get("inflation_rate", 0.06)
+        }
+
+    def save_portfolio(self, user_id: str, holdings: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None):
+        """
+        Saves user portfolio holdings.
+        """
+        df = pd.DataFrame(holdings)
+        self.portfolio_lib.write(
+            user_id, 
+            df, 
+            metadata={
+                **(metadata or {}),
+                "updated_at": str(datetime.datetime.now())
+            }
+        )
+        print(f"Portfolio saved for user: {user_id}")
+
+    def get_portfolio(self, user_id: str) -> Dict[str, Any]:
+        """
+        Retrieves user portfolio holdings.
+        """
+        if user_id not in self.portfolio_lib.list_symbols():
+            return {}
+        
+        version = self.portfolio_lib.read(user_id)
+        return {
+            "holdings": version.data.to_dict('records'),
+            "metadata": version.metadata
         }

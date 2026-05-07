@@ -12,6 +12,8 @@ from core.utils.logger import get_data_logger
 logger = get_data_logger("PathAllocator")
 
 
+_META_CACHE: Dict[str, Tuple[str, str]] = {}
+
 class PathAllocator:
     """
     Path-Asset Allocator — Institutionally constrained, optimizer-driven.
@@ -57,7 +59,7 @@ class PathAllocator:
         self.beta_equity_capital = self.target_equity_capital * (1.0 - self.equity_split_percent)
 
         # --- Base return assumption by risk profile (annualised) ---
-        self._base_return = {"Aggressive": 0.15, "Balanced": 0.11, "Conservative": 0.08}[risk_profile]
+        self._base_return = {"Aggressive": 0.15, "Balanced": 0.11, "Moderate": 0.11, "Conservative": 0.08}[risk_profile]
 
         # --- Multi-Cap Sieve Targets (Large:Mid:Small) ---
         if custom_cap_ratios is not None:
@@ -102,13 +104,25 @@ class PathAllocator:
 
     def _fetch_metadata_bulk(self, symbols: List[str]) -> dict:
         """Parallelise metadata hydration across all candidates using a thread pool."""
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         results = {}
-        logger.info(f"PathAllocator: Parallel metadata hydration for {len(symbols)} symbols...")
+        to_fetch = []
+        for s in symbols:
+            if s in _META_CACHE:
+                logger.info(f"CACHE HIT: Metadata for {s} found in _META_CACHE.")
+                results[s] = _META_CACHE[s]
+            else:
+                to_fetch.append(s)
+
+        if not to_fetch:
+            return results
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        logger.info(f"PathAllocator: Parallel metadata hydration for {len(to_fetch)} symbols...")
         with ThreadPoolExecutor(max_workers=16) as pool:
-            futures = {pool.submit(self._fetch_single_metadata, s): s for s in symbols}
+            futures = {pool.submit(self._fetch_single_metadata, s): s for s in to_fetch}
             for future in as_completed(futures):
                 sym, sector, cap = future.result()
+                _META_CACHE[sym] = (sector, cap)
                 results[sym] = (sector, cap)
         logger.info("PathAllocator: Parallel metadata hydration complete.")
         return results
@@ -371,6 +385,7 @@ class PathAllocator:
             for f in equity_funds:
                 selected.append({
                     "ticker": f.ticker,
+                    "name": f.name,
                     "category": f.category,
                     "tracking_error": getattr(f, "tracking_error", 0),
                     "expense_ratio": getattr(f, "expense_ratio", 0),
@@ -385,6 +400,7 @@ class PathAllocator:
             for f in defensive_funds:
                 selected.append({
                     "ticker": f.ticker,
+                    "name": f.name,
                     "category": f.category,
                     "tracking_error": getattr(f, "tracking_error", 0),
                     "expense_ratio": getattr(f, "expense_ratio", 0),

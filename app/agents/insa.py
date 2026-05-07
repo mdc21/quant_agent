@@ -76,6 +76,18 @@ class InsightNarrativeEngine:
         )
         return narrative
 
+    def generate_summary(self, data: Dict[str, Any]) -> str:
+        """Generates a concise strategic summary for the portfolio review page."""
+        risk = data.get("risk_profile", "Moderate")
+        eq_count = len(data.get("equity_sleeve", []))
+        pa_count = len(data.get("passive_sleeve", []))
+        
+        # Deterministic but professional summary
+        return (
+            f"A {risk} fiduciary mandate has been applied, resulting in a dual-sleeve portfolio of {eq_count} direct equities and {pa_count} passive funds. "
+            f"The alpha sleeve is optimized for high ROCE and sector discipline, while the beta sleeve provides liquidity and market stability."
+        )
+
     def track_goal_progress(self, goals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Evaluates progress towards specific financial milestones."""
         report = []

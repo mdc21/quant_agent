@@ -1,10 +1,9 @@
 import datetime
 import pandas as pd
 import numpy as np
-from typing import List, Tuple
-from core.data.breeze_client import BreezeClient
-from core.data.store import DataStore
-from core.data.ingestion import IngestionEngine
+from typing import List, Tuple, Dict
+
+_PRICE_CACHE: Dict[str, pd.Series] = {}
 
 class HistoricalProvider:
     def __init__(self, session_token: str = None):
@@ -33,6 +32,11 @@ class HistoricalProvider:
 
     def get_price_series(self, symbol: str, lookback_days: int = 180) -> pd.Series:
         """Returns the raw daily closing price series for a single symbol."""
+        cache_key = f"{symbol}_{lookback_days}"
+        if cache_key in _PRICE_CACHE:
+            print(f"CACHE HIT: Serving {symbol} price series from in-memory cache.")
+            return _PRICE_CACHE[cache_key]
+
         from core.utils.logger import get_data_logger
         import yfinance as yf
         logger = get_data_logger("HistoricalProvider")
@@ -43,7 +47,9 @@ class HistoricalProvider:
             daily_close = df['close'].groupby(df.index.date).last()
             daily_close.index = pd.to_datetime(daily_close.index)
             start_date = pd.Timestamp(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=lookback_days)).tz_localize(None)
-            return daily_close.loc[daily_close.index >= start_date]
+            res = daily_close.loc[daily_close.index >= start_date]
+            _PRICE_CACHE[cache_key] = res
+            return res
             
         logger.warning(f"Breeze Price Data missing for {symbol}. Falling back to YFinance...")
         
@@ -89,6 +95,7 @@ class HistoricalProvider:
                 except Exception as e_persist:
                     logger.warning(f"Harden Sync failed for {symbol}: {e_persist}")
                     
+                _PRICE_CACHE[cache_key] = series
                 return series
         except Exception as e:
             logger.error(f"YFinance fallback failed for {symbol}: {e}")
