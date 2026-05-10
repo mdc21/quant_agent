@@ -305,7 +305,19 @@ function PortfolioPage() {
           <div className="rounded-2xl border hairline bg-card overflow-hidden">
              <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 p-6">
                 {currentHoldings.length === 0 ? (
-                  <p className="text-sm text-muted-foreground italic col-span-full">No existing holdings found. Please use 'Update Portfolio' to add assets.</p>
+                  <div className="col-span-full py-12 flex flex-col items-center text-center">
+                    <div className="size-16 rounded-full bg-accent/10 flex items-center justify-center mb-4">
+                      <Upload className="size-8 text-accent" />
+                    </div>
+                    <h3 className="font-serif text-2xl">No holdings found.</h3>
+                    <p className="text-muted-foreground mt-2 max-w-sm">To see your optimization manifest and migration plan, we need to know what you currently own.</p>
+                    <Button 
+                      className="mt-6 rounded-full px-8" 
+                      onClick={() => setShowUpload(true)}
+                    >
+                      <Plus className="mr-2 size-4" /> Sync your portfolio
+                    </Button>
+                  </div>
                 ) : (
                   currentHoldings.map((h: any) => (
                     <div key={h.symbol} className="p-4 rounded-xl border hairline bg-secondary/10 flex flex-col justify-between">
@@ -432,12 +444,43 @@ function PortfolioPage() {
           </div>
         </div>
 
+        {/* Selection Funnel (Recruitment Analogy) */}
+        <div className="mt-14 p-8 rounded-2xl border hairline bg-accent/5 border-accent/20">
+          <div className="flex items-center gap-3 mb-4">
+             <Zap className="size-5 text-accent" />
+             <h2 className="font-serif text-2xl">The Selection Funnel</h2>
+          </div>
+          <p className="text-sm text-muted-foreground max-w-2xl leading-relaxed">
+            Our engine performs a multi-stage "Recruitment" process. We evaluate the entire universe of stocks, 
+            but only the elite few that pass our strict fiduciary and risk constraints are "Recruited" into your Dream Team.
+          </p>
+
+          <div className="mt-8 grid sm:grid-cols-3 gap-6">
+            <div className="p-4 rounded-xl bg-background/50 border hairline">
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">Stage 1: Universe</div>
+              <div className="text-lg font-serif mt-1 italic">The Applicants</div>
+              <div className="text-xs text-muted-foreground mt-2">~117 companies screened for quality, ROCE, and fiduciary hygiene.</div>
+            </div>
+            <div className="p-4 rounded-xl bg-background/50 border hairline">
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">Stage 2: Sieve</div>
+              <div className="text-lg font-serif mt-1 italic">The Interview</div>
+              <div className="text-xs text-muted-foreground mt-2">Deep-dive into GNPA, NIM, and Capital Culture for quality anchors.</div>
+            </div>
+            <div className="p-4 rounded-xl bg-accent/10 border border-accent/30 shadow-sm relative overflow-hidden">
+              <div className="absolute -right-4 -bottom-4 size-20 rounded-full bg-accent/10 blur-xl" />
+              <div className="text-[11px] uppercase tracking-wider text-accent font-semibold">Stage 3: Recruited</div>
+              <div className="text-lg font-serif mt-1">The Dream Team</div>
+              <div className="text-xs text-accent/80 mt-2">The final {equity_sleeve.length} stocks optimized to fit your sector and risk caps.</div>
+            </div>
+          </div>
+        </div>
+
         <div className="mt-14 grid lg:grid-cols-2 gap-10">
           {/* Alpha Sleeve */}
           <div>
             <div className="flex items-center gap-3 mb-6">
                <Briefcase className="size-5 text-accent" />
-               <h2 className="font-serif text-2xl">Alpha Sleeve (Direct)</h2>
+               <h2 className="font-serif text-2xl">Recruited Alpha Sleeve</h2>
             </div>
             <div className="space-y-3">
               {equity_sleeve.map((s: any) => (
@@ -481,6 +524,39 @@ function PortfolioPage() {
             </div>
           </div>
         </div>
+        {/* Research Universe (The Candidates) */}
+        {reviewData.research_universe && (
+          <div className="mt-14 pt-14 border-t hairline">
+            <div className="flex items-center justify-between mb-8">
+              <div className="flex items-center gap-3">
+                 <div className="size-8 rounded-full bg-secondary flex items-center justify-center">
+                   <Info className="size-4 text-muted-foreground" />
+                 </div>
+                 <div>
+                   <h2 className="font-serif text-2xl">Research Universe</h2>
+                   <p className="text-xs text-muted-foreground mt-1">Shortlisted candidates who remain on our active watchlist.</p>
+                 </div>
+              </div>
+            </div>
+            
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {reviewData.research_universe
+                .filter((s: any) => !equity_sleeve.some((es: any) => es.symbol === s.symbol))
+                .slice(0, 12)
+                .map((s: any) => (
+                  <div key={s.symbol} className="p-4 rounded-xl border hairline bg-secondary/5 group hover:bg-secondary/10 transition-colors">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium">{s.symbol}</span>
+                      <span className="text-[10px] text-accent font-bold px-1.5 py-0.5 rounded bg-accent/10">SCORE: {s.conviction?.toFixed(2)}</span>
+                    </div>
+                    <div className="mt-2 text-[10px] text-muted-foreground line-clamp-2 italic">
+                      {s.rationale || "Passed fiduciary sieve; pending optimizer fit."}
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
       </div>
     </AppShell>
   );

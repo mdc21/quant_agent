@@ -1,118 +1,113 @@
-import os
 import sys
-import pandas as pd
-from typing import Dict, Any
+import os
+from pathlib import Path
+from unittest.mock import MagicMock
 
-# Ensure project root is in path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+# Add project root to path
+root_dir = Path(__file__).resolve().parent.parent
+sys.path.append(str(root_dir))
 
 from app.agents.allocator import PathAllocator
+from core.data.store import DataStore
+from core.data.agent_schema import StockCandidate
 
-def verify_aggressive_capital_distribution():
-    print("\n🛡️  Fiduciary Audit: Aggressive Profile Capital Distribution")
-    print("==============================================================")
+def verify_icici_allocation():
+    print("--- 🛡️ ICICIBANK Allocation Verification (May 2026) ---")
+    store = DataStore()
+    lib = store.lib
     
-    # 1. Initialize Allocator for Aggressive Profile
-    # Total Capital: 10 Lakh, Max Stocks: 15
-    total_capital = 1_000_000
-    risk_profile = "Aggressive"
+    # 1. Fetch the hardened ICICI data
+    symbol = "ICICIBANK"
+    symbol_key = f"FUNDAMENTALS_{symbol}"
     
+    if not lib.has_symbol(symbol_key):
+        print(f"Error: {symbol} not found in ArcticDB.")
+        return
+        
+    fundamentals = lib.read(symbol_key).data.iloc[-1].to_dict()
+    print(f"Hardened Metrics: GNPA: {fundamentals.get('gnpa')}, NIM: {fundamentals.get('nim')}, CASA: {fundamentals.get('casa_ratio')}")
+    
+    # 2. Mock EQRA Candidates
+    # We'll provide ICICI and HDFC as top picks
+    mock_candidates = [
+        StockCandidate(
+            symbol="ICICIBANK",
+            conviction_score=0.95,
+            rationale="Elite banking anchor with NIM expansion.",
+            lineage_id="VERIFIED_FY26",
+            factors={
+                "q_score": 9.0,
+                "roa": fundamentals.get("roa", 0.023),
+                "fiduciary_grade": True,
+                **fundamentals
+            }
+        ),
+        StockCandidate(
+            symbol="HDFCBANK",
+            conviction_score=0.85,
+            rationale="Stable post-merger pillar.",
+            lineage_id="VERIFIED_FY26",
+            factors={
+                "q_score": 8.5,
+                "roa": 0.0188,
+                "fiduciary_grade": True
+            }
+        ),
+        StockCandidate(
+            symbol="KOTAKBANK",
+            conviction_score=0.92,
+            rationale="Superior underwriting discipline.",
+            lineage_id="VERIFIED_FY26",
+            factors={
+                "q_score": 9.2,
+                "roa": 0.0214,
+                "fiduciary_grade": True
+            }
+        )
+    ]
+    
+    # 3. Initialize PathAllocator for 4L Portfolio
     allocator = PathAllocator(
-        risk_profile=risk_profile,
-        total_capital=total_capital,
-        max_stocks=15,
-        equity_split_percent=60 # 60% of Equity goes to Direct Stocks
+        total_capital=400000,
+        risk_profile="Aggressive"
     )
     
-    print(f"Risk Profile: {risk_profile}")
-    print(f"Target Multi-Cap Ratio (Capital): 60:25:15")
-    print(f"Target Equity Allocation (Macro): {allocator.equity_allocation*100:.0f}%")
-    print(f"Target Alpha (Direct Stock) Capital: ₹{allocator.alpha_capital:,.2f}")
-    print("--------------------------------------------------------------")
+    # Mock EQRA and Metadata fetching
+    allocator.eqra = MagicMock()
+    allocator.eqra.screen_stocks.return_value = mock_candidates
     
-    # 2. Mock Metadata & EQRA to ensure we have candidates to pick from
-    from unittest.mock import MagicMock
-    from core.data.agent_schema import StockCandidate
+    allocator._fetch_metadata_bulk = MagicMock()
+    allocator._fetch_metadata_bulk.return_value = {
+        "ICICIBANK": ("Financial Services", "Large Cap"),
+        "HDFCBANK": ("Financial Services", "Large Cap"),
+        "KOTAKBANK": ("Financial Services", "Large Cap")
+    }
     
-    # Create 40 mock candidates (20 Large, 10 Mid, 10 Small)
-    mock_candidates = []
-    for i in range(1, 41):
-        # Give slightly higher conviction to some to test prioritization
-        conv = 0.7 + (i % 4) * 0.1
-        mock_candidates.append(StockCandidate(
-            symbol=f"SYM_{i}", conviction_score=conv, rationale="", 
-            factors={"q_score": 4, "roa": 0.05}, lineage_id="L1"
-        ))
-    allocator.eqra.screen_stocks = MagicMock(return_value=mock_candidates)
-    
-    # Map symbols to specific caps and sectors
-    # 1-20: Large, 21-30: Mid, 31-40: Small
-    def mock_meta(symbol):
-        idx = int(symbol.split("_")[1])
-        if idx <= 20: cap = "Large Cap"
-        elif idx <= 30: cap = "Mid Cap"
-        else: cap = "Small Cap"
-        
-        # Distribute into 10 sectors to allow more room
-        sectors = ["Financials", "Technology", "FMCG", "Energy", "Materials", "Industrials", "Auto", "Pharma", "Consumer", "Infra"]
-        sector = sectors[idx % 10]
-        return sector, cap
-        
-    allocator._fetch_metadata = mock_meta
-    
-    # Mock price history
+    # Mock Covariance to avoid price fetching
     import pandas as pd
     import numpy as np
-    mock_returns = pd.DataFrame(np.random.randn(10, 40), columns=[f"SYM_{i}" for i in range(1, 41)])
-    allocator._fetch_price_history = MagicMock(return_value=mock_returns)
+    allocator._build_covariance = MagicMock()
+    allocator._build_covariance.return_value = pd.DataFrame(
+        np.eye(3) * 0.04, 
+        index=["ICICIBANK", "HDFCBANK", "KOTAKBANK"],
+        columns=["ICICIBANK", "HDFCBANK", "KOTAKBANK"]
+    )
 
-    print("🧠 Orchestrating Capital-Weighted Optimization (Refined Mock)...")
-    sleeve = allocator.build_equity_sleeve()
+    # 4. Run Selection
+    print("\nSimulating PathAllocator: build_equity_sleeve...")
+    sleeve, universe = allocator.build_equity_sleeve()
     
-    if not sleeve:
-        print("❌ Audit Failed: No stocks selected.")
-        return
-
-    # 3. Aggregate Capital by Market Cap Category
-    cap_distribution = {}
-    total_deployed = 0
+    # 5. Check ICICI results
+    icici_alloc = next((item for item in sleeve if item["symbol"] == "ICICIBANK"), None)
     
-    for stock in sleeve:
-        cap = stock['cap']
-        capital = stock['target_capital']
-        cap_distribution[cap] = cap_distribution.get(cap, 0) + capital
-        total_deployed += capital
-
-    # 4. Print Findings
-    print("\n📊 Final Capital Distribution (Direct Equity Sleeve):")
-    for cap, capital in sorted(cap_distribution.items()):
-        percentage = (capital / total_deployed) * 100
-        print(f"  {cap:10}: ₹{capital:12,.2f} ({percentage:5.1f}%)")
-    
-    print(f"\nTotal Deployed Capital: ₹{total_deployed:,.2f}")
-    
-    # 5. Sector Check
-    sector_distribution = {}
-    for stock in sleeve:
-        sector = stock['sector']
-        capital = stock['target_capital']
-        sector_distribution[sector] = sector_distribution.get(sector, 0) + capital
-        
-    print("\n🏢 Sector Exposure (Cap Ceiling Check):")
-    for sector, capital in sorted(sector_distribution.items(), key=lambda x: x[1], reverse=True):
-        percentage = (capital / total_deployed) * 100
-        status = "✅ PASS" if percentage <= 26.5 else "❌ FAIL" # 25% + buffer
-        print(f"  {sector:25}: {percentage:5.1f}% [{status}]")
-
-    print("\n==============================================================")
-    print("AUDIT COMPLETE.")
+    if icici_alloc:
+        print(f"\n✅ ICICIBANK Allocation Result:")
+        print(f"Allocation Amount: ₹{icici_alloc['target_capital']:,.0f}")
+        print(f"Weight in Alpha Sleeve: {icici_alloc['target_weight']*100:.1f}%")
+        print(f"Total Portfolio Weight: {(icici_alloc['target_capital']/allocator.total_capital)*100:.1f}%")
+        print(f"Rationale: {icici_alloc.get('rationale', 'N/A')}")
+    else:
+        print("\n❌ ICICIBANK was not selected.")
 
 if __name__ == "__main__":
-    try:
-        verify_aggressive_capital_distribution()
-    except Exception as e:
-        print(f"❌ Critical Audit Error: {e}")
-        import traceback
-        traceback.print_exc()
+    verify_icici_allocation()

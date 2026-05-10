@@ -37,7 +37,7 @@ def check_aggressive_counts():
     
     allocator._fetch_metadata = mock_meta
     
-    sleeve = allocator.build_equity_sleeve()
+    sleeve, _ = allocator.build_equity_sleeve()
     
     from collections import Counter
     counts = Counter([s['cap'] for s in sleeve])

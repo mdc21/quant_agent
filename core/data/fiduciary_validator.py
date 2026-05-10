@@ -102,8 +102,26 @@ class FiduciaryValidator:
             else:
                 api_data.setdefault("fcf_positive_years", 0)
                 api_data.setdefault("fcf_years_checked", 0)
+
+            # --- P4: Specialized Financial Ratios Hydration ---
+            # Automatically fetch GNPA, CASA, NIM, CET1 for all financial/banking firms
+            sector_str = str(api_data.get('sector', '')).lower()
+            industry_str = str(api_data.get('industry', '')).lower()
+            is_fin_sector = any(x in sector_str or x in industry_str for x in ["financial", "bank", "nbfc", "insurance", "capital market"])
+            
+            if is_fin_sector:
+                logger.info(f"Financial/Banking entity detected for {symbol}. Hydrating specialized fiduciary ratios...")
+                specialized = self.verification_feed.get_specialized_ratios(symbol)
+                for k, v in specialized.items():
+                    if v is not None:
+                        api_data[k] = v
+                
+                # Fetch Presentation/Transcript links for Document Intelligence
+                doc_links = self.verification_feed.get_document_links(symbol)
+                api_data.update(doc_links)
+                        
         except Exception as e:
-            logger.warning(f"ROCE/FCF enrichment failed for {symbol}: {e}")
+            logger.warning(f"ROCE/FCF/Financial enrichment failed for {symbol}: {e}")
             api_data.setdefault("roce", 0.0)
             api_data.setdefault("fcf_positive_years", 0)
             api_data.setdefault("fcf_years_checked", 0)

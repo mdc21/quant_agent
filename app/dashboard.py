@@ -318,7 +318,9 @@ with st.sidebar:
     st.divider()
     
     if persona == "📈 Investor":
-        nav = st.radio("Navigation", ["Onboarding / Discovery", "Portfolio & Advice", "Goal Health", "Voice & Insights"])
+        # 🛡️ Fiduciary Routing: If coming from Quick Advice, default to Portfolio & Advice (Index 1)
+        nav_index = 1 if st.session_state.get("qa_mode") else 0
+        nav = st.radio("Navigation", ["Onboarding / Discovery", "Portfolio & Advice", "Goal Health", "Voice & Insights"], index=nav_index)
     else:
         nav = st.radio("Navigation", ["Admin Console", "Risk Control", "Audit Ledger", "System Health"])
 
@@ -419,13 +421,20 @@ if persona == "📈 Investor":
                             live_priced   = []   # successfully fetched from Yahoo
 
                             for _, row in df_import.iterrows():
-                                sym = row["Symbol"]
-                                qty = row.get("Quantity", 0)
-                                avg_price = row.get("avg_buy_price", 0)
+                                # 🛡️ Fiduciary Guard: Ensure qty and avg_price are valid numbers
+                                try:
+                                    qty = float(row.get("Quantity", 0))
+                                    if pd.isna(qty): qty = 0.0
+                                except: qty = 0.0
+
+                                try:
+                                    avg_price = float(row.get("avg_buy_price", 0))
+                                    if pd.isna(avg_price): avg_price = 0.0
+                                except: avg_price = 0.0
 
                                 if SymbolMapper.is_zero_value(sym):
                                     # Bankrupt / delisted — market value is ₹0
-                                    live_price = 0
+                                    live_price = 0.0
                                     zero_valued.append(sym)
 
                                 elif SymbolMapper.is_resolvable(sym):
@@ -436,7 +445,7 @@ if persona == "📈 Investor":
                                              contextlib.redirect_stderr(io.StringIO()):
                                             hist = yf.Ticker(f"{yahoo_sym}.NS").history(period="1d")
                                         if not hist.empty:
-                                            live_price = hist["Close"].iloc[-1]
+                                            live_price = float(hist["Close"].iloc[-1])
                                             live_priced.append(sym)
                                         else:
                                             cost_fallback.append(sym)
@@ -447,11 +456,18 @@ if persona == "📈 Investor":
                                     live_price = avg_price
                                     cost_fallback.append(sym)
 
+                                # Final safety check for live_price
+                                if pd.isna(live_price): live_price = avg_price
+                                if pd.isna(live_price): live_price = 0.0
+
                                 market_val = qty * live_price
-                                pnl = ((live_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
-                                total_market_value += market_val
-                                valued_rows.append({**row.to_dict(), "live_price": live_price,
-                                                    "market_value": market_val, "pnl_pct": pnl})
+                                pnl = ((live_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+                                
+                                if not pd.isna(market_val):
+                                    total_market_value += market_val
+                                    
+                                valued_rows.append({**row.to_dict(), "live_price": float(live_price),
+                                                    "market_value": float(market_val), "pnl_pct": float(pnl)})
 
                             df_import = pd.DataFrame(valued_rows)
                             st.session_state.imported_portfolio = df_import
@@ -650,9 +666,23 @@ if persona == "📈 Investor":
 
 
     elif nav == "Portfolio & Advice":
-        if not st.session_state.goals_defined:
+        if not st.session_state.get("goals_defined") and not st.session_state.get("qa_mode"):
             st.warning("Please define your goals in 'Onboarding / Discovery' first.")
         else:
+            if st.session_state.get("qa_mode") and st.session_state.get("qa_summary"):
+                s = st.session_state.qa_summary
+                st.markdown(f"""
+                <div style='background:#1e293b; padding:1.2rem; border-radius:12px; border:2px solid #6366f1; margin-bottom:2rem; box-shadow: 0 4px 20px rgba(99,102,241,0.2);'>
+                    <h4 style='color:#818cf8; margin:0 0 1rem 0; font-family:Outfit,sans-serif;'>📜 Investment Plan Manifest</h4>
+                    <div style='display:flex; justify-content:space-between; align-items:center;'>
+                        <div style='flex:1;'><p style='color:#94a3b8; font-size:0.75rem; margin:0; text-transform:uppercase;'>Purpose</p><p style='margin:0; font-weight:700; color:#f8fafc; font-size:1.1rem;'>{s['purpose']}</p></div>
+                        <div style='flex:1;'><p style='color:#94a3b8; font-size:0.75rem; margin:0; text-transform:uppercase;'>Horizon</p><p style='margin:0; font-weight:700; color:#f8fafc; font-size:1.1rem;'>{s['horizon']}</p></div>
+                        <div style='flex:1;'><p style='color:#94a3b8; font-size:0.75rem; margin:0; text-transform:uppercase;'>Risk</p><p style='margin:0; font-weight:700; color:#f8fafc; font-size:1.1rem;'>{s['risk']}</p></div>
+                        <div style='flex:1.5;'><p style='color:#94a3b8; font-size:0.75rem; margin:0; text-transform:uppercase;'>Annual Deployment</p><p style='margin:0; font-weight:700; color:#6366f1; font-size:1.2rem;'>{fmt_inr(s['total_annual'])}</p></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.markdown(f"<div class='card'><p class='metric-title'>Portfolio Value</p><p class='metric-value'>{fmt_inr(st.session_state.invested_amount)}</p></div>", unsafe_allow_html=True)
@@ -932,15 +962,16 @@ if persona == "📈 Investor":
                                 custom_cap_ratios=custom_cap
                             )
 
-                            st.session_state.path_equity = allocator.build_equity_sleeve(current_portfolio=current_port_map)
+                            st.session_state.path_equity, st.session_state.research_universe = allocator.build_equity_sleeve(current_portfolio=current_port_map)
                             st.session_state.path_passive = allocator.build_passive_sleeve()
                             eq = st.session_state.path_equity
+                            univ = st.session_state.research_universe
                             opt_method = eq[0].get('optimizer', 'Equal-Weight') if eq else 'Equal-Weight'
                             st.session_state.allocator_meta = {
-                                "equity_cap": allocator.target_equity_capital,
-                                "defensive_cap": allocator.target_defensive_capital,
-                                "alpha_cap": allocator.alpha_capital,
-                                "beta_cap": allocator.beta_equity_capital,
+                                "equity_cap": float(allocator.target_equity_capital or 0.0),
+                                "defensive_cap": float(allocator.target_defensive_capital or 0.0),
+                                "alpha_cap": float(allocator.alpha_capital or 0.0),
+                                "beta_cap": float(allocator.beta_equity_capital or 0.0),
                                 "regime_scale": f"{allocator.equity_allocation*100:.0f}%",
                                 "optimizer_method": opt_method,
                             }
@@ -1003,6 +1034,7 @@ if persona == "📈 Investor":
                                 "regime": regime,
                                 "trade_count": trade_count,
                                 "total_sell_value": total_sell_val,
+                                "research_universe": st.session_state.get('research_universe', []),
                                 "equity_sleeve": st.session_state.path_equity,
                                 "passive_sleeve": st.session_state.path_passive,
                                 "rebalance_actions": rebalance_actions,
@@ -1036,16 +1068,57 @@ if persona == "📈 Investor":
                 method_badge = "🟢 MVO (Optimal)" if method == "MVO" else ("🟡 HRP (Fallback)" if method == "HRP" else "⚪ Equal-Weight (Legacy)")
                 st.info(f"**Macro Allocation:** ₹{meta['equity_cap']:,.0f} Total Equity | ₹{meta['defensive_cap']:,.0f} Defensive | Optimizer: {method_badge}", icon="📊")
             
+            # --- THE SELECTION FUNNEL (Educational Context) ---
+            st.markdown("### 🔬 The Selection Funnel")
+            st.markdown("""
+                <div style='background:rgba(99,102,241,0.1); padding:1.2rem; border-radius:12px; border-left:4px solid #6366f1; margin-bottom:1.5rem;'>
+                    <p style='color:#6366f1; font-weight:700; font-size:1.1rem; margin-bottom:0.5rem;'>🎯 The Recruitment Analogy</p>
+                    <p style='color:#94a3b8; font-size:0.9rem; line-height:1.6; margin-bottom:1rem;'>
+                        Our engine evaluates the entire market, but only a few make it into your portfolio.
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            f1, f2, f3 = st.columns(3)
+            with f1:
+                st.markdown("""
+                    <div style='background:#1e293b; padding:1rem; border-radius:10px; border:1px solid #334155; height:100px;'>
+                        <b style='color:#f8fafc; font-size:0.9rem;'>1. Research Universe</b><br>
+                        <small style='color:#94a3b8;'>The 'Applicants'. Everyone who met the minimum criteria (~50-100 stocks).</small>
+                    </div>
+                """, unsafe_allow_html=True)
+            with f2:
+                st.markdown("""
+                    <div style='background:#1e293b; padding:1rem; border-radius:10px; border:1px solid #334155; height:100px;'>
+                        <b style='color:#f8fafc; font-size:0.9rem;'>2. Fiduciary Sieve</b><br>
+                        <small style='color:#94a3b8;'>The 'Interview'. Deep-dive into GNPA, NIM, and Culture to filter for quality.</small>
+                    </div>
+                """, unsafe_allow_html=True)
+            with f3:
+                st.markdown("""
+                    <div style='background:#1e293b; padding:1rem; border-radius:10px; border:1px solid #334155; height:100px;'>
+                        <b style='color:#f8fafc; font-size:0.9rem;'>3. Final Selection</b><br>
+                        <small style='color:#94a3b8;'>The 'Dream Team'. The top stocks that best fit your budget and risk caps.</small>
+                    </div>
+                """, unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+
             if hasattr(st.session_state, 'path_equity'):
-                st.markdown("#### 🔵 Alpha Sleeve: Direct Equities")
+                st.markdown("#### 🎯 Final Selection: The Dream Team ℹ️", help="THE RECRUITED: These are the top stocks that cleared our fiduciary quality filters and the GENPOA optimizer. They represent the optimal balance of risk and reward for your specific profile.")
                 df_eq = pd.DataFrame(st.session_state.path_equity)
                 if not df_eq.empty:
                     # Flatten factors and explicitly round for the UI
                     df_eq['ROCE'] = df_eq['factors'].apply(lambda x: round(x.get('roce', 0), 4))
                     df_eq['FCF Yrs'] = df_eq['factors'].apply(lambda x: x.get('fcf_positive_years', 0))
                     df_eq['Momentum'] = df_eq['factors'].apply(lambda x: round(x.get('momentum', 0.5), 2))
-                    df_eq['target_capital'] = df_eq['target_capital'].round(2)
-                    df_eq['target_weight'] = df_eq['target_weight'].round(4)
+                    # 🛡️ Global NaN Scrubber
+                    df_eq = df_eq.fillna({
+                        "target_weight": 0.0,
+                        "target_capital": 0.0,
+                        "ROCE": 0.0,
+                        "Momentum": 0.5,
+                        "conviction": 0.0
+                    })
                     
                     st.dataframe(
                         df_eq[['symbol', 'sector', 'cap', 'target_weight', 'target_capital', 'conviction', 'ROCE', 'FCF Yrs', 'Momentum']],
@@ -1064,13 +1137,51 @@ if persona == "📈 Investor":
                 else:
                     st.warning("No equities passed the strict QARP constraints.")
 
+            if hasattr(st.session_state, 'research_universe'):
+                with st.expander("📡 Research Universe: The Applicants ℹ️", expanded=False):
+                    st.markdown("""
+                        <div style='background:rgba(248,250,252,1); padding:0.8rem; border-radius:10px; border-left:4px solid #94a3b8; margin-bottom:1rem;'>
+                            <small style='color:#64748b;'>
+                                <b>THE APPLICANTS:</b> These stocks passed the initial financial screening (~50-100 companies) but were set aside during final optimization 
+                                to prevent over-exposure to certain sectors or to maintain the strict 5/10/40 risk limits. They remain on our active watchlist.
+                            </small>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    df_univ = pd.DataFrame(st.session_state.research_universe)
+                    if not df_univ.empty:
+                        # Only show stocks that were NOT selected
+                        selected_syms = set(df_eq['symbol'].tolist()) if not df_eq.empty else set()
+                        df_candidates = df_univ[~df_univ['symbol'].isin(selected_syms)]
+                        
+                        # 🛡️ Global NaN Scrubber
+                        df_candidates = df_candidates.fillna({
+                            "conviction": 0.0
+                        })
+                        
+                        st.dataframe(
+                            df_candidates[['symbol', 'sector', 'cap', 'conviction', 'rationale']],
+                            column_config={
+                                "symbol": "Ticker",
+                                "conviction": st.column_config.NumberColumn("Score", format="%.2f"),
+                                "rationale": "Research Note"
+                            },
+                            hide_index=True,
+                            width="stretch"
+                        )
+
 
             if hasattr(st.session_state, 'path_passive'):
                 st.markdown("#### 🟢 Beta & Defensive Sleeve: Funds")
                 df_pf = pd.DataFrame(st.session_state.path_passive)
                 if not df_pf.empty:
-                    df_pf['target_capital'] = df_pf['target_capital'].round(2)
-                    df_pf['target_weight'] = df_pf['target_weight'].round(4)
+                    # 🛡️ Global NaN Scrubber
+                    df_pf = df_pf.fillna({
+                        "target_weight": 0.0,
+                        "target_capital": 0.0,
+                        "expense_ratio": 0.005,
+                        "conviction": 0.0
+                    })
+                    
                     st.dataframe(
                         df_pf[['ticker', 'category', 'rationale', 'target_weight', 'target_capital', 'expense_ratio', 'conviction']],
                         column_config={
@@ -1107,17 +1218,27 @@ if persona == "📈 Investor":
                         try:
                             from core.utils.symbol_mapper import SymbolMapper
                             yahoo_ticker = SymbolMapper.to_yahoo(sym)
-                            curr_price = yf.Ticker(f"{yahoo_ticker}.NS").history(period="1d")["Close"].iloc[-1]
+                            hist = yf.Ticker(f"{yahoo_ticker}.NS").history(period="1d")
+                            if not hist.empty:
+                                curr_price = float(hist["Close"].iloc[-1])
+                            else:
+                                curr_price = float(avg_price)
                         except:
-                            curr_price = avg_price # Fallback
+                            curr_price = float(avg_price) # Fallback
                         
-                        curr_val = qty * curr_price
-                        target_val = target_map.get(sym, 0)
+                        if pd.isna(curr_price): curr_price = 0.0
+
+                        curr_val = float(qty * curr_price)
+                        target_val = float(target_map.get(sym, 0.0))
+                        
+                        if pd.isna(curr_val): curr_val = 0.0
+                        if pd.isna(target_val): target_val = 0.0
+                        
                         diff = target_val - curr_val
                         
                         action = "HOLD"
                         if target_val == 0: action = "EXIT"
-                        elif diff > (0.1 * curr_val): action = "TOP-UP" # 10% threshold for topup
+                        elif diff > (0.1 * curr_val if curr_val > 0 else 100): action = "TOP-UP" 
                         elif diff < (-0.1 * curr_val): action = "TRIM"
                         
                         # Tax Loss Harvesting Flag
@@ -1126,9 +1247,9 @@ if persona == "📈 Investor":
                         actions.append({
                             "Asset": sym,
                             "Action": action,
-                            "Current Value": curr_val,
-                            "Target Value": target_val,
-                            "Difference": diff,
+                            "Current Value": float(curr_val),
+                            "Target Value": float(target_val),
+                            "Difference": float(diff),
                             "Tax Harvest": tlh
                         })
                     

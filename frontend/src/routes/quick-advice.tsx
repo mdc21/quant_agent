@@ -112,16 +112,48 @@ function Quick() {
                      <Stat k="Instrument Count" v={advice.equity_sleeve.length + advice.passive_sleeve.length} />
                   </div>
 
+                  {/* 🔬 Selection Funnel (Recruitment Analogy) */}
+                  <div className="mt-10 p-6 rounded-xl border hairline bg-accent/5 border-accent/20">
+                    <h3 className="font-serif text-lg flex items-center gap-2 text-accent">
+                      <Zap className="size-4" /> The Selection Funnel
+                    </h3>
+                    <p className="mt-2 text-xs text-muted-foreground leading-relaxed">
+                      Our fiduciary engine evaluates the entire market, but only a few make it into your portfolio. 
+                      Think of it as a strict corporate recruitment process.
+                    </p>
+                    
+                    <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div className="p-3 rounded-lg bg-background/60 border hairline">
+                        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">1. Universe</div>
+                        <div className="text-sm font-medium mt-1">The Applicants</div>
+                        <div className="text-[10px] text-muted-foreground mt-1">~117 companies screened for ROCE & Governance.</div>
+                      </div>
+                      <div className="p-3 rounded-lg bg-background/60 border hairline">
+                        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">2. Sieve</div>
+                        <div className="text-sm font-medium mt-1">The Interview</div>
+                        <div className="text-[10px] text-muted-foreground mt-1">Deep-dive into NIM, GNPA & Culture.</div>
+                      </div>
+                      <div className="p-3 rounded-lg bg-accent/10 border border-accent/30 shadow-sm">
+                        <div className="text-[10px] uppercase tracking-wider text-accent font-semibold">3. Recruited</div>
+                        <div className="text-sm font-medium mt-1">The Dream Team</div>
+                        <div className="text-[10px] text-accent/80 mt-1">Final {advice.equity_sleeve.length} stocks optimized for your risk profile.</div>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="mt-12 grid md:grid-cols-2 gap-8">
                      <div>
                         <div className="flex items-center gap-2 mb-4">
                            <Briefcase className="size-4 text-accent" />
-                           <h3 className="font-serif text-xl">Top Equities</h3>
+                           <h3 className="font-serif text-xl">Recruited Equities</h3>
                         </div>
                         <div className="space-y-2">
                            {advice.equity_sleeve.slice(0, 8).map((s: any) => (
-                             <div key={s.symbol} className="flex items-center justify-between p-3 rounded-lg border hairline bg-background/50 hover:border-accent/40 transition-colors">
-                                <span className="font-medium">{s.symbol}</span>
+                             <div key={s.symbol} className="flex items-center justify-between p-3 rounded-lg border hairline bg-background/50 hover:border-accent/40 transition-colors group">
+                                <div>
+                                  <div className="font-medium">{s.symbol}</div>
+                                  <div className="text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">Recruited for: {s.cap}</div>
+                                </div>
                                 <span className="text-xs text-muted-foreground">{fmtInr(s.target_capital)}</span>
                              </div>
                            ))}
@@ -130,7 +162,7 @@ function Quick() {
                      <div>
                         <div className="flex items-center gap-2 mb-4">
                            <Layers className="size-4 text-accent" />
-                           <h3 className="font-serif text-xl">Funds & Passive</h3>
+                           <h3 className="font-serif text-xl">Passive Sleeve</h3>
                         </div>
                         <div className="space-y-2">
                            {advice.passive_sleeve.map((s: any) => (
@@ -140,6 +172,25 @@ function Quick() {
                              </div>
                            ))}
                         </div>
+                     </div>
+                  </div>
+
+                  {/* 📡 The Applicants (Research Universe) */}
+                  <div className="mt-14 pt-8 border-t hairline">
+                     <div className="flex items-center justify-between mb-4">
+                        <h3 className="font-serif text-lg">Shortlisted Applicants</h3>
+                        <span className="text-[10px] text-muted-foreground uppercase tracking-widest">Active Watchlist</span>
+                     </div>
+                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        {advice.research_universe
+                           .filter((s: any) => !advice.equity_sleeve.some((es: any) => es.symbol === s.symbol))
+                           .slice(0, 8)
+                           .map((s: any) => (
+                              <div key={s.symbol} className="px-3 py-2 rounded-lg border hairline bg-secondary/5 text-xs flex items-center justify-between">
+                                 <span className="text-muted-foreground font-medium">{s.symbol}</span>
+                                 <span className="text-[9px] font-bold text-accent/60">{(s.conviction * 10).toFixed(1)}</span>
+                              </div>
+                           ))}
                      </div>
                   </div>
 

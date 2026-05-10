@@ -98,6 +98,13 @@ class YFinanceClient:
             except Exception as e:
                 logger.warning(f"ROCE computation failed for {symbol}: {e}")
 
+            # --- Metadata Extraction (Sector/Industry) ---
+            info = ticker.info
+            sector = SymbolMapper.get_sector(symbol)
+            if not sector:
+                sector = info.get('sector', 'Unknown')
+            industry = info.get('industry', 'Unknown')
+
             return {
                 "symbol": symbol,
                 "date": str(latest_date),
@@ -109,6 +116,8 @@ class YFinanceClient:
                 "roce": roce,
                 "fcf_positive_years": fcf_positive_years,
                 "fcf_years_checked": fcf_years_checked,
+                "sector": sector,
+                "industry": industry,
                 "source": "YFINANCE"
             }
         except Exception as e:

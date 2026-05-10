@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { AppShell } from "@/components/site/AppShell";
-import { ArrowRight, Target, PieChart, Zap, TrendingUp, ShieldCheck, Sparkles, Loader2, Info } from "lucide-react";
+import { ArrowRight, Target, PieChart, Zap, TrendingUp, ShieldCheck, Sparkles, Loader2, Info, Check } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 
@@ -101,25 +101,27 @@ function Dashboard() {
         </div>
 
         {/* Action cards */}
-        <h2 className="font-serif text-2xl mt-14">Where to next</h2>
+        <h2 className="font-serif text-2xl mt-14">Your Journey Path</h2>
         <div className="mt-5 grid md:grid-cols-3 gap-5">
           <ActionCard
             to="/goals"
-            tag="Wizard"
+            tag="Step 1 · Wizard"
             title="Define goals"
             body="Walk through the survival, safety, growth framework. Five minutes."
             icon={Target}
+            status={goalsCount > 0 ? "complete" : "active"}
           />
           <ActionCard
             to="/portfolio"
-            tag="Review"
+            tag="Step 2 · Review"
             title="Existing portfolio"
             body="Inspect your sleeves, drift, and migration recommendations."
             icon={PieChart}
+            status={goalsCount > 0 ? "active" : "locked"}
           />
           <ActionCard
             to="/quick-advice"
-            tag="Calculator"
+            tag="Tool · Calculator"
             title="Quick advice"
             body="Lump-sum or SIP allocation in one screen, no full plan needed."
             icon={Zap}
@@ -136,7 +138,7 @@ function Dashboard() {
               </div>
               <p className="mt-6 font-serif text-2xl leading-snug text-foreground/90 italic">
                 {goalsCount > 0 
-                  ? `"Your ${risk} fiduciary mandate is active. We are currently maintaining sector neutrality while optimizing the passive sleeve for tracking efficiency."`
+                  ? `"Step 1 Complete. Your ${risk} mandate is defined. The next logical step is to sync your existing holdings so we can compute your optimization manifest."`
                   : `"Welcome. Once you define your goals and import your existing holdings, the Insight Narrative Engine (INSA) will generate a strategic manifest here."`
                 }
               </p>
@@ -189,17 +191,28 @@ function Dashboard() {
   );
 }
 
-function ActionCard({ to, tag, title, body, icon: Icon }: { to: string; tag: string; title: string; body: string; icon: any }) {
+function ActionCard({ to, tag, title, body, icon: Icon, status }: { to: string; tag: string; title: string; body: string; icon: any; status?: "complete" | "active" | "locked" }) {
   return (
-    <Link to={to} className="group rounded-2xl border hairline bg-card p-7 hover:border-foreground/30 hover:shadow-[0_20px_60px_-40px_oklch(0.18_0.015_250/0.4)] transition-all">
+    <Link 
+      to={to} 
+      className={`group rounded-2xl border hairline bg-card p-7 transition-all ${
+        status === 'locked' ? 'opacity-50 grayscale pointer-events-none' : 'hover:border-foreground/30 hover:shadow-[0_20px_60px_-40px_oklch(0.18_0.015_250/0.4)]'
+      }`}
+    >
       <div className="flex items-center justify-between">
-        <Icon className="size-5 text-accent" />
+        <div className="flex items-center gap-2">
+          <Icon className={`size-5 ${status === 'complete' ? 'text-green-500' : 'text-accent'}`} />
+          {status === 'complete' && <Check className="size-3 text-green-500" />}
+        </div>
         <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{tag}</span>
       </div>
-      <div className="mt-10 font-serif text-2xl">{title}</div>
+      <div className="mt-10 font-serif text-2xl flex items-center gap-2">
+        {title}
+      </div>
       <p className="text-sm text-muted-foreground mt-2 leading-relaxed">{body}</p>
       <div className="mt-6 inline-flex items-center gap-1.5 text-sm text-accent">
-        Continue <ArrowRight className="size-4 transition-transform group-hover:translate-x-1" />
+        {status === 'complete' ? 'Update plan' : status === 'locked' ? 'Complete previous step' : 'Continue'} 
+        <ArrowRight className="size-4 transition-transform group-hover:translate-x-1" />
       </div>
     </Link>
   );

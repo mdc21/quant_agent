@@ -109,12 +109,12 @@ def render_quick_advice():
     col_lump, col_sip = st.columns(2)
     with col_lump:
         lump = st.number_input("One-time Lump Sum (₹)", min_value=0,
-                               value=st.session_state.get("qa_lump", 0),
+                               value=float(st.session_state.get("qa_lump", 0)) if not pd.isna(st.session_state.get("qa_lump")) else 0,
                                step=100000, format="%d", key="qa_lump_input")
         st.session_state.qa_lump = lump
     with col_sip:
         sip = st.number_input("Monthly SIP (₹)", min_value=0,
-                              value=st.session_state.get("qa_sip", 0),
+                              value=float(st.session_state.get("qa_sip", 0)) if not pd.isna(st.session_state.get("qa_sip")) else 0,
                               step=5000, format="%d", key="qa_sip_input")
         st.session_state.qa_sip = sip
     st.markdown("</div>", unsafe_allow_html=True)
@@ -122,12 +122,16 @@ def render_quick_advice():
     # ── Generate Plan ────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("⚡ Generate My Investment Plan →", key="qa_generate", use_container_width=True):
+        import pandas as pd
         purpose  = st.session_state.get("qa_purpose")
         horizon  = st.session_state.get("qa_horizon", "3–7 Years")
         risk     = st.session_state.get("qa_risk", "Moderate")
-        lump_val = st.session_state.get("qa_lump", 0)
-        sip_val  = st.session_state.get("qa_sip", 0)
+        lump_val = float(st.session_state.get("qa_lump", 0))
+        sip_val  = float(st.session_state.get("qa_sip", 0))
 
+        if pd.isna(lump_val): lump_val = 0.0
+        if pd.isna(sip_val): sip_val = 0.0
+        
         logger.info(f"Quick Advice Generation attempt: Purpose='{purpose}', Risk='{risk}', LumpSum={lump_val}, SIP={sip_val}")
 
         if not purpose:
@@ -153,7 +157,7 @@ def render_quick_advice():
 
 def _show_allocation_preview(purpose, risk, horizon, lump, sip):
     """Show a smart asset allocation recommendation before routing to dashboard."""
-
+    import pandas as pd
     ALLOCATIONS = {
         ("Wealth Growth",        "Aggressive"):   {"Equities": 80, "Passive/ETF": 15, "Debt": 5},
         ("Wealth Growth",        "Moderate"):     {"Equities": 60, "Passive/ETF": 20, "Debt": 20},
@@ -171,7 +175,8 @@ def _show_allocation_preview(purpose, risk, horizon, lump, sip):
 
     key = (purpose, risk)
     alloc = ALLOCATIONS.get(key, {"Equities": 50, "Debt": 30, "Cash": 20})
-    total = lump + (sip * 12)
+    total = float(lump + (sip * 12))
+    if pd.isna(total): total = 0.0
 
     colors = ["#6366f1", "#10b981", "#f59e0b", "#3b82f6", "#ec4899"]
     st.markdown("---")
@@ -181,7 +186,8 @@ def _show_allocation_preview(purpose, risk, horizon, lump, sip):
     cols = st.columns(len(alloc))
     for i, (asset, pct) in enumerate(alloc.items()):
         with cols[i]:
-            val = total * pct / 100
+            val = float(total * pct / 100)
+            if pd.isna(val): val = 0.0
             st.markdown(f"""
             <div style='background:{colors[i % len(colors)]}15;border:1.5px solid {colors[i % len(colors)]};
                 border-radius:12px;padding:1rem;text-align:center;'>

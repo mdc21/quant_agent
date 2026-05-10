@@ -111,69 +111,98 @@ class EquityResearchAgent:
 
     def screen_universe(self, universe_fundamentals: Dict[str, Dict[str, Any]], price_momentum: Dict[str, float]) -> List[StockCandidate]:
         """
-        Runs the multi-stage sieve to identify candidates using Fiduciary metrics.
+        Runs the multi-stage sieve to identify candidates using Sector-Specific Fiduciary metrics.
         """
         candidates = []
         
+        from core.utils.symbol_mapper import SymbolMapper
         for symbol, fundamentals in universe_fundamentals.items():
-            # Calculate ROA
+            # Re-verify sector via SymbolMapper to ensure rationale labels are correct
+            curated_sector = SymbolMapper.get_sector(symbol)
+            sector = curated_sector if curated_sector else str(fundamentals.get('sector', 'Unknown'))
+            industry = str(fundamentals.get('industry', 'Unknown'))
+            
+            # --- BASE METRICS ---
             assets = fundamentals.get('total_assets', 0)
             net_income = fundamentals.get('net_income', 0)
             roa = (net_income / assets) if assets > 0 else 0
-            
-            # Stage 1: Quality Gate (QARP Score)
             q_score = self.calculate_qarp_score(fundamentals)
             
-            # Stage 2: Fundamental Screen
-            # --- Core gates (always enforced) ---
-            passes_quality = (
-                q_score >= 2 and        # At least 2/4 on QARP
-                roa >= 0.015            # Min 1.5% ROA (allows banks & capital-heavy Ind-AS)
-            )
-
-            # --- P3: ROCE > 15% gate (enforced only when data exists in vault) ---
-            roce = fundamentals.get('roce', None)
-            if roce is not None and roce > 0:
-                # Data exists — apply the spec filter
-                passes_roce = roce >= self.min_roce   # default 0.15 = 15%
-            else:
-                # Field not yet in vault (old record) — skip filter, don't penalise
-                passes_roce = True
-
-            # --- P3: FCF positive in ≥ 3 of last 4 years gate ---
-            fcf_positive = fundamentals.get('fcf_positive_years', None)
-            fcf_checked = fundamentals.get('fcf_years_checked', 0)
-            if fcf_positive is not None and fcf_checked >= 3:
-                # Data exists — apply the spec filter (3 of last 4 years)
-                passes_fcf = fcf_positive >= 3
-            else:
-                # Field not yet in vault — skip filter
-                passes_fcf = True
-
-            passes_fundamental = passes_quality and passes_roce and passes_fcf
+            # --- SECTOR-SPECIFIC SIEVES ---
+            passes_fundamental = False
+            rationale_parts = []
             
-            if passes_fundamental:
-                # Stage 3: Momentum Overlay
-                momentum_rank = price_momentum.get(symbol, 0.0)
+            if "Bank" in industry or "Bank" in sector:
+                # BANK SIEVE: Priority = Asset Quality & Funding
+                gnpa = fundamentals.get('gnpa')
+                casa = fundamentals.get('casa_ratio')
+                pcr = fundamentals.get('pcr')
+                cet1 = fundamentals.get('cet1')
                 
+                # Rule: ROA > 1.5% is the primary gate. 
+                # If specialized metrics are missing, allow pass but log as 'Unverified'
+                passes_bank = (roa >= 0.015)
+                
+                if gnpa is not None: passes_bank &= (gnpa <= 0.025)
+                if cet1 is not None: passes_bank &= (cet1 >= 0.12)
+                
+                passes_fundamental = passes_bank
+                rationale_parts.append(f"BANK: ROA {roa:.1%}")
+                if gnpa: rationale_parts.append(f"GNPA {gnpa:.1%}")
+                else: rationale_parts.append("GNPA: Unverified")
+            
+            elif "NBFC" in industry or "Credit Services" in industry:
+                # NBFC SIEVE: Priority = Margin & Liquidity
+                nim = fundamentals.get('nim')
+                gnpa = fundamentals.get('gnpa')
+                
+                # Rule: ROA > 2.5%
+                passes_nbfc = (roa >= 0.025)
+                if gnpa is not None: passes_nbfc &= (gnpa <= 0.035)
+                
+                passes_fundamental = passes_nbfc
+                rationale_parts.append(f"NBFC: ROA {roa:.1%}")
+                if nim: rationale_parts.append(f"NIM {nim:.1%}")
+
+            elif "Asset Management" in industry or "Capital Markets" in industry:
+                # AMC/CAPITAL MARKETS: Priority = Margin & ROCE
+                margin = (net_income / fundamentals.get('revenue', 1e9)) if fundamentals.get('revenue', 0) > 0 else 0
+                roce = fundamentals.get('roce', 0)
+                
+                # Rule: ROCE > 25% and Margin > 40%
+                passes_capmkt = (
+                    roce >= 0.25 and
+                    margin >= 0.40
+                )
+                passes_fundamental = passes_capmkt
+                rationale_parts.append(f"CAP_MKT: ROCE {roce:.0%}, Margin {margin:.0%}")
+            
+            else:
+                # STANDARD SECTOR SIEVE: QARP + ROCE
+                roce = fundamentals.get('roce', 0)
+                fcf_pos = fundamentals.get('fcf_positive_years', 0)
+                
+                passes_ind = (
+                    q_score >= 2 and
+                    roa >= 0.015 and
+                    (roce >= self.min_roce or roce == 0) and
+                    (fcf_pos >= 3 or fcf_pos == 0)
+                )
+                passes_fundamental = passes_ind
+                
+                # Use actual sector if available, otherwise 'CORE'
+                label = sector.upper() if sector and sector != "Unknown" else "CORE"
+                rationale_parts.append(f"{label}: QARP {q_score}/4, ROA {roa:.1%}")
+
+            # --- MOMENTUM OVERLAY ---
+            if passes_fundamental:
+                momentum_rank = price_momentum.get(symbol, 0.0)
                 # Final Conviction Score: 60% Quality + 40% Momentum
                 quality_normalized = q_score / 4.0
                 conviction = (0.6 * quality_normalized) + (0.4 * momentum_rank)
                 
-                # Get Fiduciary Grade
                 fiduciary_grade = fundamentals.get('fiduciary_grade', False)
-
-                # Build rationale with all available signals
-                rationale_parts = [
-                    f"QARP: {q_score}/4",
-                    f"ROA: {roa:.1%}",
-                    f"Momentum: {momentum_rank:.0%}ile",
-                    f"Fiduciary: {fiduciary_grade}",
-                ]
-                if roce is not None:
-                    rationale_parts.append(f"ROCE: {roce:.1%}")
-                if fcf_positive is not None:
-                    rationale_parts.append(f"FCF+yrs: {fcf_positive}/{fcf_checked}")
+                rationale_parts.append(f"Momentum: {momentum_rank:.0%}ile")
                 
                 candidates.append(StockCandidate(
                     symbol=symbol,
@@ -183,12 +212,11 @@ class EquityResearchAgent:
                         "q_score": q_score,
                         "momentum": momentum_rank,
                         "roa": roa,
-                        "roce": roce if roce is not None else 0.0,
-                        "fcf_positive_years": fcf_positive if fcf_positive is not None else 0,
+                        "sector": sector,
+                        "industry": industry,
                         "fiduciary_grade": fiduciary_grade,
                     },
                     lineage_id=fundamentals.get('lineage_id', 'UNKNOWN')
                 ))
                 
-        # Sort by conviction
         return sorted(candidates, key=lambda x: x.conviction_score, reverse=True)

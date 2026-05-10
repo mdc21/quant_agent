@@ -2,14 +2,30 @@ import datetime
 import pandas as pd
 import numpy as np
 from typing import List, Tuple, Dict
+from core.data.store import DataStore
+
+try:
+    from core.data.breeze_client import BreezeClient
+    from core.data.ingestion import IngestionEngine
+    HAS_BREEZE = True
+except ImportError:
+    HAS_BREEZE = False
 
 _PRICE_CACHE: Dict[str, pd.Series] = {}
 
 class HistoricalProvider:
     def __init__(self, session_token: str = None):
-        self.breeze = BreezeClient.get_instance(session_token)
         self.store = DataStore()
-        self.ingestion = IngestionEngine(self.breeze, self.store)
+        if HAS_BREEZE:
+            try:
+                self.breeze = BreezeClient.get_instance(session_token)
+                self.ingestion = IngestionEngine(self.breeze, self.store)
+            except Exception:
+                self.breeze = None
+                self.ingestion = None
+        else:
+            self.breeze = None
+            self.ingestion = None
 
     def _ensure_data_freshness(self, symbols: List[str], lookback_days: int = 180):
         """Ensures ArcticDB has the latest data for the requested symbols."""
@@ -27,8 +43,11 @@ class HistoricalProvider:
             # In a production system, we would check if the stored data is fresh.
             # Here we do a simple check: if it's not in ArcticDB at all, ingest it.
             if sym not in available_symbols:
-                print(f"HistoricalProvider: {sym} not found in ArcticDB. Fetching live from Breeze...")
-                self.ingestion.ingest_historical_to_arctic(sym, from_date_str, to_date_str, session_meta)
+                if self.ingestion:
+                    print(f"HistoricalProvider: {sym} not found in ArcticDB. Fetching live from Breeze...")
+                    self.ingestion.ingest_historical_to_arctic(sym, from_date_str, to_date_str, session_meta)
+                else:
+                    print(f"HistoricalProvider: {sym} not in local vault and Breeze unavailable. Moving to YFinance fallback...")
 
     def get_price_series(self, symbol: str, lookback_days: int = 180) -> pd.Series:
         """Returns the raw daily closing price series for a single symbol."""

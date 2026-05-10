@@ -107,11 +107,9 @@ class PortfolioArchitect:
                 prob.solve(solver=cp.OSQP)
                 
             if w.value is None or prob.status not in ["optimal", "optimal_inaccurate"]:
-                print(f"GENPOA: Institutional constraints failed. Falling back to simple UCITS.")
-                prob = cp.Problem(objective, base_constraints + constraints)
-                prob.solve(solver=cp.OSQP)
+                print("GENPOA: All MVO attempts failed. Final fallback to Equal Weight.")
+                return np.full(n, 1.0 / n)
 
-            print(f"GENPOA [MVO]: Capital-Weight Constraints Applied. Status: {prob.status}")
             return w.value
 
         except Exception as e:

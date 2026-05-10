@@ -152,16 +152,28 @@ async def review_portfolio(user_key: str):
     profile = store.get_profile(user_key)
     risk = profile.get("risk_profile", "Moderate")
     
+    # Calculate target_year from goals (Horizon matching)
+    target_year = 2030
+    if goals:
+        try:
+            # Find the furthest goal year
+            years = [int(g.get('target_year', 2030)) for g in goals if g.get('target_year')]
+            if years:
+                target_year = max(years)
+        except:
+            pass
+
     # Run PathAllocator
     allocator = PathAllocator(
         risk_profile=risk,
-        total_capital=total_cap
+        total_capital=total_cap,
+        target_year=target_year
     )
     
     # Map current portfolio for allocator
     current_port_map = {h['symbol']: h.get('market_value', 0)/total_cap for h in holdings if total_cap > 0}
     
-    equity_sleeve = allocator.build_equity_sleeve(current_portfolio=current_port_map)
+    equity_sleeve, research_universe = allocator.build_equity_sleeve(current_portfolio=current_port_map)
     passive_sleeve = allocator.build_passive_sleeve()
     
     # Calculate Rebalance Plan and Tax
@@ -266,6 +278,7 @@ async def review_portfolio(user_key: str):
     
     return clean_nan({
         "equity_sleeve": equity_sleeve,
+        "research_universe": research_universe,
         "passive_sleeve": passive_sleeve,
         "rebalance_plan": rebalance_plan,
         "total_est_tax": total_est_tax,
@@ -289,12 +302,19 @@ async def get_quick_advice(req: QuickAdviceRequest):
     if req.investment_type == "SIP":
         total_amount = req.amount * 12 # Optimize based on annual capital
         
+    # Map horizon to target_year for consistent recruitment logic
+    curr_year = datetime.datetime.now().year
+    horizon_map = {"short": 3, "medium": 5, "long": 10}
+    years = horizon_map.get(req.horizon, 10)
+    target_year = curr_year + years
+        
     allocator = PathAllocator(
         risk_profile=risk,
-        total_capital=total_amount
+        total_capital=total_amount,
+        target_year=target_year
     )
     
-    equity_sleeve = allocator.build_equity_sleeve()
+    equity_sleeve, research_universe = allocator.build_equity_sleeve()
     passive_sleeve = allocator.build_passive_sleeve()
     
     # Simple Narrative
@@ -307,6 +327,7 @@ async def get_quick_advice(req: QuickAdviceRequest):
     
     return clean_nan({
         "equity_sleeve": equity_sleeve,
+        "research_universe": research_universe,
         "passive_sleeve": passive_sleeve,
         "metrics": {
             "total_capital": total_amount,

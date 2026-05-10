@@ -88,7 +88,7 @@ function Wizard() {
         inflation_rate: 0.06
       });
       toast.success("Goals finalized and saved!");
-      nav({ to: "/dashboard" });
+      nav({ to: "/portfolio" });
     } catch (err: any) {
       toast.error(err.message);
     } finally {

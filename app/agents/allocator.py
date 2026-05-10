@@ -30,22 +30,39 @@ class PathAllocator:
     def __init__(
         self,
         max_stocks: int = 15,
-        max_funds: int = 15,
+        max_funds: int = 5,
         risk_profile: str = "Aggressive",
         total_capital: float = 1_000_000,
         equity_split_percent: int = 60,
         custom_macro_allocation: Optional[float] = None,
         custom_cap_ratios: Optional[Tuple[float, float, float]] = None,
+        target_year: int = 2032
     ):
         self.max_stocks = max_stocks
         self.max_funds = max_funds
         self.risk_profile = risk_profile
-        self.total_capital = total_capital
-        self.equity_split_percent = equity_split_percent / 100.0
+        
+        # 🛡️ Fiduciary Guard: Ensure total_capital is a valid number
+        try:
+            val = float(total_capital)
+            self.total_capital = val if not pd.isna(val) else 1_000_000.0
+        except:
+            self.total_capital = 1_000_000.0
+
+        try:
+            split = float(equity_split_percent) / 100.0
+            self.equity_split_percent = split if not pd.isna(split) else 0.6
+        except:
+            self.equity_split_percent = 0.6
+        self.target_year = target_year
 
         # --- Macro Allocation ---
         if custom_macro_allocation is not None:
-            self.equity_allocation = custom_macro_allocation
+            try:
+                val = float(custom_macro_allocation)
+                self.equity_allocation = val if not pd.isna(val) else 0.60
+            except:
+                self.equity_allocation = 0.60
         else:
             equity_pct = {"Aggressive": 0.80, "Balanced": 0.60, "Conservative": 0.40}
             self.equity_allocation = equity_pct.get(risk_profile, 0.60)
@@ -59,10 +76,10 @@ class PathAllocator:
         self.beta_equity_capital = self.target_equity_capital * (1.0 - self.equity_split_percent)
 
         # --- Base return assumption by risk profile (annualised) ---
-        self._base_return = {"Aggressive": 0.15, "Balanced": 0.11, "Moderate": 0.11, "Conservative": 0.08}[risk_profile]
+        self._base_return = {"Aggressive": 0.15, "Balanced": 0.11, "Moderate": 0.11, "Conservative": 0.08}.get(risk_profile, 0.11)
 
         # --- Multi-Cap Sieve Targets (Large:Mid:Small) ---
-        if custom_cap_ratios is not None:
+        if custom_cap_ratios is not None and all(not pd.isna(x) for x in custom_cap_ratios):
             self.large_pct, self.mid_pct, self.small_pct = custom_cap_ratios
         else:
             cap_ratios = {
@@ -89,8 +106,13 @@ class PathAllocator:
             clean_sym = symbol.strip().lstrip('$')
             from core.utils.symbol_mapper import SymbolMapper
             yahoo_ticker = SymbolMapper.to_yahoo(clean_sym)
+            
+            # Prefer curated sector mapping
+            sector = SymbolMapper.get_sector(clean_sym)
+            
             info = yf.Ticker(f"{yahoo_ticker}.NS").info
-            sector = info.get("sector", "Unknown")
+            if not sector:
+                sector = info.get("sector", "Unknown")
             mcap = info.get("marketCap", 0)
             if mcap >= 500_000_000_000:
                 cap = "Large Cap"
@@ -267,6 +289,7 @@ class PathAllocator:
                 "factors": c.factors,
                 "sector": sector,
                 "cap": cap,
+                "rationale": getattr(c, "rationale", "Fiduciary Candidate")
             })
 
         # Apply risk-based sector limit (Hard Ceiling)
@@ -280,9 +303,28 @@ class PathAllocator:
             "Small Cap": self.small_pct
         }
 
-        # --- SELECTION PHASE (Target-Count Sieve) ---
-        # Calculate how many stocks from each category we need to reach max_stocks
-        # while roughly matching the capital distribution.
+        # --- SELECTION PHASE (Strategic Sieve) ---
+        # 1. Congestion Check with Elite Exemption
+        ELITE_COMPOUNDERS = ["HDFCBANK", "ICICIBANK", "RELIANCE", "TCS", "INFY", "TITAN", "ASIANPAINT", "KOTAKBANK"]
+        NIFTY50_GIANTS = ["ITC", "AXISBANK", "SBIN", "BHARTIARTL", "LTIM", "HINDUNILVR", "LT"]
+        
+        for c in hydrated:
+            if c["symbol"] in ELITE_COMPOUNDERS:
+                # 0% Penalty: We want these even if they overlap
+                c["rationale"] += " | Elite Compounder Exemption Applied"
+            elif c["symbol"] in NIFTY50_GIANTS:
+                # 10% Mild Penalty: Acknowledge overlap but prioritize quality
+                c["conviction"] *= 0.90
+                c["rationale"] += " | Strategic Overlap Adj (-10%)"
+
+        # 2. Financials Priority (Growth Anchor)
+        has_fin = any(c["sector"] == "Financial Services" for c in hydrated[:self.max_stocks])
+        if not has_fin:
+            top_fin = next((c for c in hydrated if c["sector"] == "Financial Services"), None)
+            if top_fin:
+                logger.info(f"PathAllocator: Injecting Financial anchor: {top_fin['symbol']}")
+                hydrated.insert(0, top_fin)
+
         n_large = max(1, int(self.max_stocks * self.large_pct))
         n_mid   = max(1, int(self.max_stocks * self.mid_pct))
         n_small = max(1, self.max_stocks - n_large - n_mid)
@@ -291,7 +333,12 @@ class PathAllocator:
         pool_mid   = [c for c in hydrated if c["cap"] == "Mid Cap"][:n_mid]
         pool_small = [c for c in hydrated if c["cap"] == "Small Cap"][:n_small]
         
-        selected_pool = pool_large + pool_mid + pool_small
+        selected_pool = []
+        seen_syms = set()
+        for c in pool_large + pool_mid + pool_small:
+            if c["symbol"] not in seen_syms:
+                selected_pool.append(c)
+                seen_syms.add(c["symbol"])
         
         if not selected_pool:
             return []
@@ -304,6 +351,9 @@ class PathAllocator:
 
         # --- OPTIMIZATION PHASE (Capital-Weight Constraints) ---
         returns_df = self._fetch_price_history(symbols)
+        # Apply strict 5% absolute portfolio cap (approx 14% of the alpha sleeve)
+        position_cap = 0.05 / self.equity_split_percent if self.equity_split_percent > 0 else 0.15
+        
         expected_returns = self._build_expected_returns(symbols, conviction_map)
         cov_matrix = self._build_covariance(returns_df, symbols)
 
@@ -330,10 +380,14 @@ class PathAllocator:
                         sector_betas[sect] = beta
                 
                 for sect, beta in sector_betas.items():
-                    if beta > 1.2:
-                        # High Volatility: Suppress Cap to 12%
+                    if beta > 1.25 or sect in ["Metals", "Industrials"]:
+                        # Strict cyclical cap for metals/industrials
                         sector_caps[sect] = 0.12
-                        logger.info(f"PathAllocator [Risk Overlay]: {sect} flagged as HIGH VOLATILITY (Beta={beta:.2f}). Capping at 12%.")
+                        logger.info(f"PathAllocator: Cyclical Cap (12%) applied to {sect} (Beta={beta:.2f}).")
+                    elif beta > 1.2 and sect == "Financial Services":
+                        # Relaxed cap for Financials as they are a strategic anchor
+                        sector_caps[sect] = 0.25
+                        logger.info(f"PathAllocator: Strategic Financials Cap (25%) applied (Beta={beta:.2f}).")
                     elif beta < 0.8:
                         # Low Volatility: Anchor Floor to 5%
                         sector_floors[sect] = 0.05
@@ -360,29 +414,101 @@ class PathAllocator:
         for s in selected_pool:
             sym = s["symbol"]
             weight = weight_dict.get(sym, 0.0)
-            s["target_weight"] = weight
-            s["target_capital"] = self.alpha_capital * weight
+            
+            # 🛡️ Fiduciary Guard: Ensure weight is a valid number
+            if pd.isna(weight) or not isinstance(weight, (int, float, np.float64, np.float32)):
+                weight = 0.0
+                
+            s["target_weight"] = float(weight)
+            s["target_capital"] = float(self.alpha_capital * weight)
             s["optimizer"] = method
             final_selected.append(s)
 
-        return final_selected
+        return final_selected, hydrated
 
     def build_passive_sleeve(self) -> List[Dict[str, Any]]:
         """
         Builds the passive (beta + defensive) sleeve using PFRA.
-        Passive equity funds use equal weight within beta_equity_capital.
-        Defensive funds use equal weight within target_defensive_capital.
+        Simplified to ensure category uniqueness and strategic weighting.
         """
-        logger.info("PathAllocator: Fetching Passive Funds via PFRA...")
-        # Pass None to trigger the dynamic AMFI Smart-Beta scan
-        equity_funds = self.pfra.screen_funds(None)[: self.max_funds]
-        defensive_funds = self.pfra.screen_defensive_funds()
+        logger.info(f"PathAllocator: Fetching Passive Funds via PFRA (Horizon: {self.target_year})...")
+        all_equity_funds = self.pfra.screen_funds(None)
+        
+        # 1. DEDUPLICATE: Ensure only ONE fund per category to avoid overlapping exposure
+        seen_categories = set()
+        unique_equity_funds = []
+        for f in all_equity_funds:
+            if f.category not in seen_categories:
+                unique_equity_funds.append(f)
+                seen_categories.add(f.category)
+            if len(unique_equity_funds) >= self.max_funds:
+                break
 
+        defensive_funds = self.pfra.screen_defensive_funds(target_year=self.target_year)
         selected: List[Dict[str, Any]] = []
 
-        if equity_funds:
-            capital_per = self.beta_equity_capital / len(equity_funds)
-            for f in equity_funds:
+        # 2. STRATEGIC WEIGHTING: Align with 'Cleaner Portfolio' template
+        # Nifty 50 (30-40%), Next 50 (20%), Midcap (20%), Factors/Themes (Rest)
+        if unique_equity_funds:
+            weights = {}
+            others = []
+        # 2. STRATEGIC WEIGHTING & RISK-BASED SUPPRESSION
+        if unique_equity_funds:
+            # Mandate: Filter based on Risk Profile
+            # Aggressive: All
+            # Balanced: Suppress Midcap & Thematic
+            # Conservative: Suppress Next 50, Midcap & Thematic
+            
+            filtered_funds = []
+            for f in unique_equity_funds:
+                cat = f.category.lower()
+                is_mid = "midcap" in cat
+                is_thematic = "manufacturing" in cat or "smallcap" in cat
+                is_next = "next_50" in cat
+                
+                if self.risk_profile == "Aggressive":
+                    filtered_funds.append(f)
+                elif self.risk_profile in ["Balanced", "Moderate"]:
+                    if not (is_mid or is_thematic):
+                        filtered_funds.append(f)
+                else: # Conservative
+                    if not (is_mid or is_thematic or is_next):
+                        filtered_funds.append(f)
+
+            if not filtered_funds:
+                filtered_funds = unique_equity_funds[:1] # Safety fallback
+
+            weights = {}
+            others = []
+            for f in filtered_funds:
+                cat = f.category.lower()
+                if "nifty_50" in cat:
+                    weights[f.ticker] = 0.35 # Core
+                elif "value" in cat:
+                    weights[f.ticker] = 0.15 # Value Factor
+                elif "next_50" in cat:
+                    weights[f.ticker] = 0.15 # Junior Core
+                # Note: Midcap/Thematic suppressed to fulfill the 35/15/15 mandate
+            
+            # Normalize to 100% of the Beta Equity sleeve (Total 65% of portfolio)
+            final_total = sum(weights.values())
+            if final_total == 0:
+                # If no strategic match, use everything equally as emergency fallback
+                weights = {f.ticker: 1.0/len(filtered_funds) for f in filtered_funds}
+            else:
+                weights = {t: w/final_total for t, w in weights.items()}
+
+            for f in filtered_funds:
+                if f.ticker not in weights:
+                    continue # Skip unrecognized funds to avoid duplicates
+                
+                w = weights[f.ticker]
+                capital = float(self.beta_equity_capital * w)
+                target_w = float(capital / self.total_capital) if self.total_capital > 0 else 0.0
+                
+                if pd.isna(capital): capital = 0.0
+                if pd.isna(target_w): target_w = 0.0
+
                 selected.append({
                     "ticker": f.ticker,
                     "name": f.name,
@@ -390,24 +516,46 @@ class PathAllocator:
                     "tracking_error": getattr(f, "tracking_error", 0),
                     "expense_ratio": getattr(f, "expense_ratio", 0),
                     "conviction": getattr(f, "conviction_score", 0),
-                    "target_capital": capital_per,
-                    "target_weight": capital_per / self.total_capital,
-                    "rationale": "Beta Equity Strategy",
+                    "target_capital": capital,
+                    "target_weight": target_w,
+                    "rationale": f"High-conviction {f.category} ({w*100:.0f}% of beta).",
                 })
 
+        # 3. DEFENSIVE: Gold, Bonds & Liquid (User's Precision Template)
         if defensive_funds:
-            capital_per = self.target_defensive_capital / len(defensive_funds)
-            for f in defensive_funds:
-                selected.append({
-                    "ticker": f.ticker,
-                    "name": f.name,
-                    "category": f.category,
-                    "tracking_error": getattr(f, "tracking_error", 0),
-                    "expense_ratio": getattr(f, "expense_ratio", 0),
-                    "conviction": getattr(f, "conviction_score", 0),
-                    "target_capital": capital_per,
-                    "target_weight": capital_per / self.total_capital,
-                    "rationale": getattr(f, "rationale", "Defensive Sleeve"),
-                })
+            # Mandate: 15% Bonds, 12% Gold, 8% Liquid (Total 35% of portfolio)
+            # Internal split of the defensive sleeve (which is 35% of total capital):
+            # 15/35 = 43% for Bonds
+            # 12/35 = 34% for Gold
+            # 8/35  = 23% for Liquid
+            gold_fund = next((f for f in defensive_funds if "Gold" in f.name), None)
+            liquid_fund = next((f for f in defensive_funds if "Liquid" in f.name), None)
+            bond_fund = next((f for f in defensive_funds if "Bharat" in f.name or "TargetMaturity" in f.category), None)
+            
+            def_configs = [
+                (bond_fund, 0.43),   # 15% of total
+                (gold_fund, 0.34),   # 12% of total
+                (liquid_fund, 0.23)  # 8% of total
+            ]
+            
+            for fund, w in def_configs:
+                if fund:
+                    capital = float(self.target_defensive_capital * w)
+                    target_w = float(capital / self.total_capital) if self.total_capital > 0 else 0.0
+
+                    if pd.isna(capital): capital = 0.0
+                    if pd.isna(target_w): target_w = 0.0
+
+                    selected.append({
+                        "ticker": fund.ticker,
+                        "name": fund.name,
+                        "category": fund.category,
+                        "tracking_error": getattr(fund, "tracking_error", 0),
+                        "expense_ratio": getattr(fund, "expense_ratio", 0),
+                        "conviction": getattr(fund, "conviction_score", 0),
+                        "target_capital": capital,
+                        "target_weight": target_w,
+                        "rationale": "Strategic defensive anchor.",
+                    })
 
         return selected
